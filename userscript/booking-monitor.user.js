@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Eventbrite Booking Monitor — LDS Part 2 Exam (Feb 2027)
 // @namespace    https://logeshsharma.github.io/booking-availability-monitor/
-// @version      1.0.0
-// @description  Watches the RCS England "Licence in Dental Surgery Part 2 Exam February 2027" Eventbrite page and alerts (desktop + Telegram) only when tickets can genuinely be selected. Never auto-buys, never touches CAPTCHA or the waiting room.
+// @version      2.0.0
+// @description  Minimal 15-second availability monitor for the RCS England "Licence in Dental Surgery Part 2 Exam February 2027" Eventbrite page. Alerts by desktop notification and Telegram only when a ticket can genuinely be booked. Never auto-buys, never touches CAPTCHA or the waiting room.
 // @author       booking-availability-monitor
 // @homepageURL  https://logeshsharma.github.io/booking-availability-monitor/
 // @supportURL   https://github.com/Logeshsharma/booking-availability-monitor/issues
@@ -32,7 +32,8 @@
     const EVENT_URL =
         'https://www.eventbrite.co.uk/e/licence-in-dental-surgery-part-2-exam-february-2027-tickets-' +
         EVENT_ID;
-    const EVENT_NAME = 'Licence in Dental Surgery Part 2 Exam February 2027';
+    const EVENT_NAME = 'LDS Part 2 Exam — February 2027';
+    const EVENT_NAME_FULL = 'Licence in Dental Surgery Part 2 Exam February 2027';
 
     const CHECKOUT_URL =
         'https://www.eventbrite.co.uk/checkout-external?eid=' +
@@ -41,22 +42,26 @@
         encodeURIComponent(EVENT_URL);
 
     const DEFAULTS = {
-        intervalMinutes: 30,
-        minIntervalMinutes: 5,   // politeness floor — do not hammer Eventbrite
-        maxIntervalMinutes: 720,
-        heartbeatMs: 15000,      // how often we *consider* checking (cheap, local)
-        requestTimeoutMs: 25000,
-        lockTtlMs: 120000,       // cross-tab lock lifetime
+        intervalSeconds: 15,
+        minIntervalSeconds: 10,
+        maxIntervalSeconds: 3600,
+        heartbeatMs: 1000,          // drives the countdown and the deadline check
+        requestTimeoutMs: 12000,    // must comfortably fit inside one 15s cycle
+        lockTtlMs: 45000,
         notifyCooldownMs: 10 * 60 * 1000,
-        staleFactor: 2.5,        // overdue by this × interval ⇒ warn the user
-        lateFactor: 0.5          // a check landing this × interval late is 'late'
+        maxLogEntries: 1500,
+        // Back-off applied after consecutive failures, so a rate limit or an
+        // outage is never answered with the same 15s hammering.
+        backoffStartMs: 30 * 1000,
+        backoffFactor: 2,
+        backoffMaxMs: 15 * 60 * 1000,
+        rateLimitStartMs: 2 * 60 * 1000
     };
 
     const K = {
         config: 'ebm.' + EVENT_ID + '.config',
         status: 'ebm.' + EVENT_ID + '.status',
         lock: 'ebm.' + EVENT_ID + '.lock',
-        notified: 'ebm.' + EVENT_ID + '.notified',
         log: 'ebm.' + EVENT_ID + '.log'
     };
 
@@ -514,8 +519,95 @@
     }
 
     // =====================================================================
-    // Node export hook — lets tests/detection.test.js require this file
-    // without booting any browser/Tampermonkey code.
+    // 2b. SCHEDULING + LOG HELPERS (pure, unit-tested)
+    // =====================================================================
+
+    function clampIntervalSeconds(v) {
+        const n = Number(v);
+        if (!isFinite(n) || n <= 0) return DEFAULTS.intervalSeconds;
+        return Math.min(
+            DEFAULTS.maxIntervalSeconds,
+            Math.max(DEFAULTS.minIntervalSeconds, Math.round(n))
+        );
+    }
+
+    /**
+     * How long to wait before the next attempt.
+     * No failures ⇒ the configured interval. Otherwise exponential back-off,
+     * starting higher when the server actually told us to slow down.
+     */
+    function backoffDelayMs(consecutiveFailures, httpStatus, intervalMs, opts) {
+        const o = opts || DEFAULTS;
+        const fails = Number(consecutiveFailures) || 0;
+        if (fails <= 0) return intervalMs;
+        const rateLimited = httpStatus === 429 || httpStatus === 403;
+        const start = rateLimited ? o.rateLimitStartMs : o.backoffStartMs;
+        const delay = start * Math.pow(o.backoffFactor, fails - 1);
+        return Math.min(o.backoffMaxMs, Math.max(intervalMs, delay));
+    }
+
+    /** Short, human-readable reason for a failed fetch. */
+    function describeHttpError(status, fallback) {
+        // The HTTP status is rendered separately by formatLogLine and by the
+        // panel, so it is deliberately not repeated inside the message.
+        if (status === 429) return 'Rate limited by Eventbrite';
+        if (status === 403) return 'Blocked by Eventbrite';
+        if (status === 404) return 'Page not found';
+        if (typeof status === 'number' && status >= 500) return 'Eventbrite server error';
+        if (typeof status === 'number' && status > 0) return 'HTTP ' + status;
+        return fallback || 'Request failed';
+    }
+
+    function pad2(n) {
+        return n < 10 ? '0' + n : String(n);
+    }
+
+    function clockTime(ts) {
+        const d = new Date(ts);
+        return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+    }
+
+    /** `[16:30:00] SUCCESS - SOLD OUT` / `[16:30:30] ERROR - Request timeout` */
+    function formatLogLine(entry) {
+        if (!entry) return '';
+        const time = clockTime(entry.at);
+        if (entry.ok) {
+            return '[' + time + '] SUCCESS - ' + logStateLabel(entry.state);
+        }
+        const http =
+            typeof entry.http === 'number' && entry.http > 0 ? ' (HTTP ' + entry.http + ')' : '';
+        return '[' + time + '] ERROR' + http + ' - ' + (entry.error || 'Unknown error');
+    }
+
+    function logStateLabel(state) {
+        switch (state) {
+            case STATES.AVAILABLE:
+                return 'AVAILABLE';
+            case STATES.AVAILABLE_UNCONFIRMED:
+                return 'AVAILABLE (UNCONFIRMED)';
+            case STATES.SOLD_OUT:
+                return 'SOLD OUT';
+            case STATES.NOT_YET_ON_SALE:
+                return 'NOT YET ON SALE';
+            case STATES.SALES_ENDED:
+                return 'SALES ENDED';
+            case STATES.UNAVAILABLE:
+                return 'UNAVAILABLE';
+            default:
+                return 'UNKNOWN';
+        }
+    }
+
+    /** The three-value status the minimal panel shows. */
+    function panelStatusLabel(state) {
+        if (state === STATES.AVAILABLE) return 'AVAILABLE';
+        if (state === STATES.AVAILABLE_UNCONFIRMED) return 'AVAILABLE?';
+        if (state === STATES.SOLD_OUT) return 'SOLD OUT';
+        return 'UNKNOWN';
+    }
+
+    // =====================================================================
+    // Node export hook — lets tests require this file without booting the UI.
     // =====================================================================
     if (typeof module !== 'undefined' && module.exports) {
         module.exports = {
@@ -532,10 +624,16 @@
             combineSignals: combineSignals,
             shouldNotify: shouldNotify,
             describeState: describeState,
-            clampInterval: clampInterval,
+            clampIntervalSeconds: clampIntervalSeconds,
+            backoffDelayMs: backoffDelayMs,
+            describeHttpError: describeHttpError,
+            formatLogLine: formatLogLine,
+            logStateLabel: logStateLabel,
+            panelStatusLabel: panelStatusLabel,
+            clockTime: clockTime,
             DEFAULTS: DEFAULTS
         };
-        return; // never boot the UI under Node
+        return;
     }
 
     // =====================================================================
@@ -562,47 +660,45 @@
 
     function loadConfig() {
         const c = gmGet(K.config, {});
+        // Migrate v1 configs, which stored the interval in minutes.
+        let seconds = c.intervalSeconds;
+        if (seconds === undefined && typeof c.intervalMinutes === 'number') {
+            seconds = c.intervalMinutes * 60;
+        }
         return {
-            intervalMinutes: clampInterval(c.intervalMinutes),
+            intervalSeconds: clampIntervalSeconds(seconds),
             monitoring: c.monitoring === true,
             telegramToken: typeof c.telegramToken === 'string' ? c.telegramToken : '',
             telegramChatId: typeof c.telegramChatId === 'string' ? c.telegramChatId : '',
             browserNotifications: c.browserNotifications !== false,
             sound: c.sound !== false,
-            deepVerify: c.deepVerify !== false,
-            reloadOnCheck: c.reloadOnCheck === true
+            deepVerify: c.deepVerify !== false
         };
     }
 
     function saveConfig(patch) {
         const merged = Object.assign(loadConfig(), patch || {});
-        merged.intervalMinutes = clampInterval(merged.intervalMinutes);
+        merged.intervalSeconds = clampIntervalSeconds(merged.intervalSeconds);
+        delete merged.intervalMinutes;
         gmSet(K.config, merged);
         return merged;
-    }
-
-    function clampInterval(v) {
-        const n = Number(v);
-        if (!isFinite(n) || n <= 0) return DEFAULTS.intervalMinutes;
-        return Math.min(
-            DEFAULTS.maxIntervalMinutes,
-            Math.max(DEFAULTS.minIntervalMinutes, Math.round(n))
-        );
     }
 
     function loadStatus() {
         return gmGet(K.status, {
             state: null,
-            confidence: null,
             verified: false,
-            lastCheckedAt: null,
+            lastSuccessAt: null,
+            lastAttemptAt: null,
             nextCheckAt: null,
+            lastOk: null,
             lastError: null,
+            lastHttp: null,
+            successCount: 0,
+            failureCount: 0,
+            consecutiveFailures: 0,
             lastNotifiedState: null,
-            lastNotifiedAt: null,
-            checkCount: 0,
-            lastOverdueMs: 0,
-            detail: null
+            lastNotifiedAt: null
         });
     }
 
@@ -612,23 +708,84 @@
         return merged;
     }
 
-    function pushLog(entry) {
-        const log = gmGet(K.log, []);
-        log.unshift(Object.assign({ at: Date.now() }, entry));
-        gmSet(K.log, log.slice(0, 40));
+    // ---------------------------------------------------------------- log
+
+    function loadLog() {
+        const l = gmGet(K.log, []);
+        return Array.isArray(l) ? l : [];
+    }
+
+    function appendLog(entry) {
+        const log = loadLog();
+        log.push(entry);
+        // Keep the newest N entries so storage cannot grow without bound.
+        const trimmed =
+            log.length > DEFAULTS.maxLogEntries
+                ? log.slice(log.length - DEFAULTS.maxLogEntries)
+                : log;
+        gmSet(K.log, trimmed);
+        return trimmed;
+    }
+
+    function buildLogText() {
+        const log = loadLog();
+        const st = loadStatus();
+        const header = [
+            'Booking Availability Monitor — check log',
+            'Event : ' + EVENT_NAME_FULL,
+            'URL   : ' + EVENT_URL,
+            'Export: ' + new Date().toString(),
+            'Totals: ' + (st.successCount || 0) + ' successful, ' + (st.failureCount || 0) + ' failed',
+            'Entries: ' + log.length + ' (most recent ' + DEFAULTS.maxLogEntries + ' kept)',
+            ''.padEnd(60, '-'),
+            ''
+        ].join('\n');
+        return header + log.map(formatLogLine).join('\n') + '\n';
+    }
+
+    function downloadLog() {
+        try {
+            const blob = new Blob([buildLogText()], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const d = new Date();
+            const stamp =
+                d.getFullYear() +
+                pad2(d.getMonth() + 1) +
+                pad2(d.getDate()) +
+                '-' +
+                pad2(d.getHours()) +
+                pad2(d.getMinutes()) +
+                pad2(d.getSeconds());
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'booking-monitor-log-' + stamp + '.txt';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(function () {
+                URL.revokeObjectURL(url);
+            }, 2000);
+            return true;
+        } catch (e) {
+            console.error('[EBM] log download failed', e);
+            return false;
+        }
     }
 
     // =====================================================================
     // 4. NETWORK
     // =====================================================================
 
+    /** Resolves {status, text}; rejects with an Error carrying .status. */
     function httpGet(url) {
         return new Promise(function (resolve, reject) {
             let settled = false;
-            const done = function (fn, arg) {
+            const fail = function (msg, status) {
                 if (settled) return;
                 settled = true;
-                fn(arg);
+                const err = new Error(msg);
+                err.status = status || 0;
+                reject(err);
             };
             try {
                 GM_xmlhttpRequest({
@@ -637,24 +794,26 @@
                     timeout: DEFAULTS.requestTimeoutMs,
                     headers: { Accept: 'text/html,application/xhtml+xml' },
                     onload: function (res) {
+                        if (settled) return;
                         if (res.status >= 200 && res.status < 300) {
-                            done(resolve, res.responseText || '');
+                            settled = true;
+                            resolve({ status: res.status, text: res.responseText || '' });
                         } else {
-                            done(reject, new Error('HTTP ' + res.status));
+                            fail(describeHttpError(res.status), res.status);
                         }
                     },
                     onerror: function () {
-                        done(reject, new Error('network error'));
+                        fail('Network error', 0);
                     },
                     ontimeout: function () {
-                        done(reject, new Error('timeout after ' + DEFAULTS.requestTimeoutMs + 'ms'));
+                        fail('Request timeout', 0);
                     },
                     onabort: function () {
-                        done(reject, new Error('aborted'));
+                        fail('Request aborted', 0);
                     }
                 });
             } catch (e) {
-                done(reject, e);
+                fail(e.message || 'Request failed', 0);
             }
         });
     }
@@ -671,18 +830,17 @@
                 settled = true;
                 fn(arg);
             };
-            const body = JSON.stringify({
-                chat_id: chatId,
-                text: text,
-                parse_mode: 'HTML',
-                disable_web_page_preview: false
-            });
             try {
                 GM_xmlhttpRequest({
                     method: 'POST',
                     url: 'https://api.telegram.org/bot' + token + '/sendMessage',
                     headers: { 'Content-Type': 'application/json' },
-                    data: body,
+                    data: JSON.stringify({
+                        chat_id: chatId,
+                        text: text,
+                        parse_mode: 'HTML',
+                        disable_web_page_preview: false
+                    }),
                     timeout: DEFAULTS.requestTimeoutMs,
                     onload: function (res) {
                         let parsed = null;
@@ -694,14 +852,18 @@
                         if (res.status >= 200 && res.status < 300 && parsed && parsed.ok) {
                             done(resolve, parsed);
                         } else {
-                            const desc =
-                                (parsed && parsed.description) ||
-                                'HTTP ' + res.status + ' ' + (res.responseText || '').slice(0, 160);
-                            done(reject, new Error('Telegram API: ' + desc));
+                            done(
+                                reject,
+                                new Error(
+                                    'Telegram API: ' +
+                                        ((parsed && parsed.description) ||
+                                            'HTTP ' + res.status)
+                                )
+                            );
                         }
                     },
                     onerror: function () {
-                        done(reject, new Error('Telegram request failed (network/CORS)'));
+                        done(reject, new Error('Telegram request failed'));
                     },
                     ontimeout: function () {
                         done(reject, new Error('Telegram request timed out'));
@@ -714,7 +876,7 @@
     }
 
     // =====================================================================
-    // 5. NOTIFICATIONS
+    // 5. NOTIFICATIONS  (unchanged behaviour from v1)
     // =====================================================================
 
     function playAlertSound() {
@@ -722,8 +884,7 @@
             const Ctx = window.AudioContext || window.webkitAudioContext;
             if (!Ctx) return;
             const ctx = new Ctx();
-            const notes = [880, 1174.66, 1318.51];
-            notes.forEach(function (freq, i) {
+            [880, 1174.66, 1318.51].forEach(function (freq, i) {
                 const osc = ctx.createOscillator();
                 const gain = ctx.createGain();
                 osc.type = 'sine';
@@ -741,13 +902,12 @@
                 try { ctx.close(); } catch (e) { /* noop */ }
             }, 1500);
         } catch (e) {
-            console.warn('[EBM] could not play alert sound', e);
+            console.warn('[EBM] alert sound failed', e);
         }
     }
 
     function showDesktopNotification(title, body) {
-        const cfg = loadConfig();
-        if (!cfg.browserNotifications) return;
+        if (!loadConfig().browserNotifications) return;
         try {
             if (typeof GM_notification === 'function') {
                 GM_notification({
@@ -762,7 +922,7 @@
                 return;
             }
         } catch (e) {
-            console.warn('[EBM] GM_notification failed, falling back', e);
+            console.warn('[EBM] GM_notification failed', e);
         }
         try {
             if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
@@ -787,102 +947,57 @@
         }
     }
 
-    function buildAlertText(result) {
+    function escapeHtml(s) {
+        return String(s === null || s === undefined ? '' : s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+    }
+
+    function escapeAttr(s) {
+        return escapeHtml(s).replace(/"/g, '&quot;');
+    }
+
+    async function dispatchNotifications(result) {
+        const cfg = loadConfig();
+        const confirmed = result.state === STATES.AVAILABLE;
+        const title = confirmed
+            ? 'TICKETS AVAILABLE — LDS Part 2 Feb 2027'
+            : 'Possible availability — LDS Part 2 Feb 2027';
         const verified = result.verified
             ? 'Verified against Eventbrite ticket inventory.'
-            : 'NOT fully verified — open the page and check before relying on this.';
-        const names =
-            result.checkout &&
-            result.checkout.signals &&
-            result.checkout.signals.selectableNames &&
-            result.checkout.signals.selectableNames.length
-                ? '\nTickets: ' + result.checkout.signals.selectableNames.join(', ')
-                : '';
-        return (
-            describeState(result.state).toUpperCase() +
-            '\n' +
-            EVENT_NAME +
-            names +
-            '\n' +
-            verified +
-            '\n' +
-            EVENT_URL
-        );
-    }
+            : 'NOT verified — check the page yourself.';
 
-    function buildTelegramHtml(result) {
-        const esc = function (s) {
-            return String(s)
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;');
-        };
-        const head =
-            result.state === STATES.AVAILABLE
-                ? '🎟️ <b>TICKETS AVAILABLE</b>'
-                : '⚠️ <b>POSSIBLY AVAILABLE (unconfirmed)</b>';
-        const verified = result.verified
-            ? '✅ Verified against Eventbrite ticket inventory'
-            : '❓ Not fully verified — check the page yourself';
-        const sig = result.checkout && result.checkout.signals;
-        const extra =
-            sig && sig.selectableNames && sig.selectableNames.length
-                ? '\n<b>Tickets:</b> ' + esc(sig.selectableNames.join(', '))
-                : '';
-        const cap =
-            sig && typeof sig.remainingCapacity === 'number'
-                ? '\n<b>Remaining:</b> ' + sig.remainingCapacity
-                : '';
-        return (
-            head +
-            '\n\n' +
-            esc(EVENT_NAME) +
-            extra +
-            cap +
-            '\n' +
-            verified +
-            '\n\n' +
-            '<a href="' + EVENT_URL + '">Open the booking page</a>\n' +
-            '<i>' + esc(new Date().toLocaleString()) + '</i>'
-        );
-    }
-
-    async function dispatchNotifications(result, reason) {
-        const cfg = loadConfig();
-        const title =
-            result.state === STATES.AVAILABLE
-                ? 'Tickets available — LDS Part 2 Feb 2027'
-                : 'Possible availability — LDS Part 2 Feb 2027';
-
-        showDesktopNotification(title, buildAlertText(result));
+        showDesktopNotification(title, verified + '\n' + EVENT_URL);
         if (cfg.sound) playAlertSound();
 
-        let telegramOutcome = 'skipped (not configured)';
+        let telegram = 'skipped (not configured)';
         if (cfg.telegramToken && cfg.telegramChatId) {
             try {
-                await sendTelegram(cfg.telegramToken, cfg.telegramChatId, buildTelegramHtml(result));
-                telegramOutcome = 'sent';
+                await sendTelegram(
+                    cfg.telegramToken,
+                    cfg.telegramChatId,
+                    (confirmed ? '🎟️ <b>TICKETS AVAILABLE</b>' : '⚠️ <b>POSSIBLY AVAILABLE</b>') +
+                        '\n\n' +
+                        escapeHtml(EVENT_NAME_FULL) +
+                        '\n' +
+                        (result.verified ? '✅ ' : '❓ ') +
+                        verified +
+                        '\n\n<a href="' + EVENT_URL + '">Open the booking page</a>'
+                );
+                telegram = 'sent';
             } catch (e) {
-                telegramOutcome = 'failed: ' + e.message;
-                console.error('[EBM] Telegram notification failed', e);
+                telegram = 'failed: ' + e.message;
+                console.error('[EBM] Telegram failed', e);
             }
         }
 
-        saveStatus({
-            lastNotifiedState: result.state,
-            lastNotifiedAt: Date.now()
-        });
-        pushLog({
-            kind: 'notify',
-            state: result.state,
-            reason: reason,
-            telegram: telegramOutcome
-        });
-        return telegramOutcome;
+        saveStatus({ lastNotifiedState: result.state, lastNotifiedAt: Date.now() });
+        return telegram;
     }
 
     // =====================================================================
-    // 6. SCHEDULING + CHECK CYCLE
+    // 6. CHECK CYCLE
     // =====================================================================
 
     const TAB_ID = Math.random().toString(36).slice(2) + '-' + Date.now();
@@ -892,9 +1007,7 @@
     function acquireLock() {
         const lock = gmGet(K.lock, null);
         const now = Date.now();
-        if (lock && lock.owner !== TAB_ID && now - lock.at < DEFAULTS.lockTtlMs) {
-            return false; // another tab is mid-check
-        }
+        if (lock && lock.owner !== TAB_ID && now - lock.at < DEFAULTS.lockTtlMs) return false;
         gmSet(K.lock, { owner: TAB_ID, at: now });
         return true;
     }
@@ -904,175 +1017,131 @@
         if (lock && lock.owner === TAB_ID) gmSet(K.lock, null);
     }
 
-    function scheduleNext(fromMs) {
-        const cfg = loadConfig();
-        const base = typeof fromMs === 'number' ? fromMs : Date.now();
-        const next = base + cfg.intervalMinutes * 60 * 1000;
-        saveStatus({ nextCheckAt: next });
-        return next;
-    }
-
     async function runCheck(manual) {
-        if (inFlight) {
-            return { skipped: 'already-running' };
-        }
-        if (!manual && !acquireLock()) {
-            return { skipped: 'another-tab-holds-lock' };
-        }
+        if (inFlight) return { skipped: 'already-running' };
+        if (!manual && !acquireLock()) return { skipped: 'another-tab-holds-lock' };
+
         inFlight = true;
-        render();
+        refreshDynamic();
 
         const cfg = loadConfig();
+        const prev = loadStatus();
+        const now = Date.now();
+
+        let ok = false;
+        let httpStatus = null;
+        let errorMsg = null;
         let result = null;
-        let error = null;
 
         try {
-            // ---- Listing read -------------------------------------------------
-            // Prefer a background fetch: it costs one request, keeps the panel
-            // alive, and avoids a reload loop. The live DOM is only used when the
-            // fetch fails, because __NEXT_DATA__ in this tab is frozen at load.
-            let listing = null;
-            try {
-                const html = await httpGet(EVENT_URL + '?_ebm=' + Date.now());
-                listing = detectFromListingHtml(html);
-            } catch (e) {
-                error = 'listing fetch failed: ' + e.message;
-                const liveHtml = document.documentElement
-                    ? document.documentElement.outerHTML
-                    : '';
-                const fromDom = detectFromListingHtml(liveHtml);
-                // Only trust the stale in-page copy to say "still sold out".
-                listing =
-                    ALERT_STATES.indexOf(fromDom.state) === -1
-                        ? Object.assign(fromDom, { confidence: 'stale-dom' })
-                        : { source: 'listing', state: STATES.UNKNOWN, confidence: 'none', signals: {} };
-            }
+            // ---- listing read (one request per cycle in the steady state) ----
+            const res = await httpGet(EVENT_URL + '?_ebm=' + now);
+            httpStatus = res.status;
+            const listing = detectFromListingHtml(res.text);
 
-            // ---- Checkout verification ---------------------------------------
-            // Only when the cheap read suggests something other than a plain
-            // sold-out, so the steady state stays at exactly one request / cycle.
-            let checkout = null;
-            const worthVerifying =
-                cfg.deepVerify &&
-                (ALERT_STATES.indexOf(listing.state) !== -1 ||
-                    listing.state === STATES.UNKNOWN);
-
-            if (worthVerifying) {
-                try {
-                    const chtml = await httpGet(CHECKOUT_URL);
-                    checkout = detectFromCheckoutHtml(chtml);
-                } catch (e) {
-                    checkout = {
-                        source: 'checkout',
-                        state: STATES.UNKNOWN,
-                        confidence: 'none',
-                        selectable: false,
-                        signals: { reason: 'checkout fetch failed: ' + e.message }
-                    };
+            if (listing.confidence === 'none') {
+                // 200 OK, but nothing readable in it — a bot check, a queue page
+                // or a layout change. That is NOT fresh data, so it is a failure.
+                errorMsg = 'Could not read availability (page blocked or changed)';
+                result = { state: STATES.UNKNOWN, confidence: 'none', verified: false,
+                           listing: listing, checkout: null };
+            } else {
+                // ---- inventory verification, only when it might matter --------
+                let checkout = null;
+                if (cfg.deepVerify && ALERT_STATES.indexOf(listing.state) !== -1) {
+                    try {
+                        const cres = await httpGet(CHECKOUT_URL);
+                        checkout = detectFromCheckoutHtml(cres.text);
+                    } catch (e) {
+                        checkout = {
+                            source: 'checkout', state: STATES.UNKNOWN, confidence: 'none',
+                            selectable: false,
+                            signals: { reason: 'checkout fetch failed: ' + e.message }
+                        };
+                    }
                 }
+                result = combineSignals(listing, checkout);
+                ok = true;
             }
-
-            result = combineSignals(listing, checkout);
         } catch (e) {
-            error = e.message;
-            result = {
-                state: STATES.UNKNOWN,
-                confidence: 'none',
-                verified: false,
-                listing: null,
-                checkout: null
-            };
+            httpStatus = e.status || null;
+            errorMsg = e.message || 'Request failed';
+            result = { state: prev.state || STATES.UNKNOWN, confidence: 'none',
+                       verified: false, listing: null, checkout: null };
         }
 
-        const now = Date.now();
-        const prev = loadStatus();
-        const decision = shouldNotify(prev, result, now, DEFAULTS.notifyCooldownMs);
+        const finishedAt = Date.now();
+        const consecutiveFailures = ok ? 0 : (prev.consecutiveFailures || 0) + 1;
+        const intervalMs = cfg.intervalSeconds * 1000;
+        const delay = backoffDelayMs(consecutiveFailures, httpStatus, intervalMs);
 
-        // How far past its deadline did this check actually land? Background-tab
-        // throttling and machine sleep both show up here. We persist it so the
-        // panel can keep reporting the delay after the catch-up check has
-        // already moved the deadline forward.
-        const overdueBy =
-            !manual && typeof prev.nextCheckAt === 'number' && prev.nextCheckAt > 0
-                ? Math.max(0, now - prev.nextCheckAt)
-                : 0;
+        appendLog({
+            at: finishedAt,
+            ok: ok,
+            http: httpStatus,
+            state: ok ? result.state : null,
+            error: ok ? null : errorMsg
+        });
+
+        // Availability only ever changes on a successful read, so a failed cycle
+        // must never move the recorded state or fire an alert.
+        const decision = ok
+            ? shouldNotify(prev, result, finishedAt, DEFAULTS.notifyCooldownMs)
+            : { notify: false, reason: 'check-failed' };
 
         saveStatus({
-            lastOverdueMs: overdueBy,
-            state: result.state,
-            confidence: result.confidence,
-            verified: result.verified,
-            lastCheckedAt: now,
-            lastError: error,
-            checkCount: (prev.checkCount || 0) + 1,
-            detail: {
-                listing: result.listing ? result.listing.signals : null,
-                checkout: result.checkout ? result.checkout.signals : null
-            }
-        });
-        pushLog({
-            kind: 'check',
-            state: result.state,
-            confidence: result.confidence,
-            verified: result.verified,
-            error: error,
-            notified: decision.notify,
-            notifyReason: decision.reason
+            state: ok ? result.state : prev.state,
+            verified: ok ? result.verified : prev.verified,
+            lastAttemptAt: finishedAt,
+            lastSuccessAt: ok ? finishedAt : prev.lastSuccessAt,
+            lastOk: ok,
+            lastError: ok ? null : errorMsg,
+            lastHttp: httpStatus,
+            successCount: (prev.successCount || 0) + (ok ? 1 : 0),
+            failureCount: (prev.failureCount || 0) + (ok ? 0 : 1),
+            consecutiveFailures: consecutiveFailures,
+            nextCheckAt: loadConfig().monitoring ? finishedAt + delay : null
         });
 
-        if (decision.notify) {
-            await dispatchNotifications(result, decision.reason);
-        }
-
-        if (loadConfig().monitoring) scheduleNext(now);
+        if (decision.notify) await dispatchNotifications(result);
 
         inFlight = false;
         releaseLock();
         render();
 
-        if (cfg.reloadOnCheck && loadConfig().monitoring && !manual) {
-            setTimeout(function () {
-                location.reload();
-            }, 3000);
-        }
-
-        return { result: result, notified: decision.notify, error: error };
+        return { ok: ok, state: result.state, error: errorMsg, http: httpStatus,
+                 notified: decision.notify, backoffMs: delay };
     }
 
     /**
-     * Heartbeat rather than one long timer: background tabs throttle timers to
-     * ~1/minute and a sleeping machine freezes them entirely, so we compare
-     * wall-clock time against a persisted deadline on every tick instead of
-     * trusting setTimeout to fire on schedule.
+     * Wall-clock heartbeat rather than one long timer: background tabs throttle
+     * timers and a sleeping machine freezes them, so we compare now() against a
+     * persisted deadline instead of trusting setTimeout to fire on schedule.
      */
     function heartbeat() {
         const cfg = loadConfig();
         if (!cfg.monitoring) {
-            render();
+            refreshDynamic();
             return;
         }
         const st = loadStatus();
         const now = Date.now();
         if (!st.nextCheckAt) {
-            scheduleNext(now - cfg.intervalMinutes * 60 * 1000);
+            saveStatus({ nextCheckAt: now });
             return;
         }
         if (now >= st.nextCheckAt && !inFlight) {
             runCheck(false);
         } else {
-            render();
+            refreshDynamic();
         }
     }
 
     function startMonitoring() {
         saveConfig({ monitoring: true });
-        const st = loadStatus();
-        if (!st.lastCheckedAt) {
-            runCheck(false);
-        } else {
-            scheduleNext(Date.now());
-        }
+        saveStatus({ nextCheckAt: Date.now(), consecutiveFailures: 0 });
         render();
+        heartbeat();
     }
 
     function stopMonitoring() {
@@ -1082,16 +1151,8 @@
         render();
     }
 
-    function isStale() {
-        const cfg = loadConfig();
-        if (!cfg.monitoring) return false;
-        const st = loadStatus();
-        if (!st.nextCheckAt) return false;
-        return Date.now() > st.nextCheckAt + cfg.intervalMinutes * 60 * 1000 * (DEFAULTS.staleFactor - 1);
-    }
-
     // =====================================================================
-    // 7. FLOATING PANEL  (Shadow DOM so Eventbrite's CSS cannot touch it)
+    // 7. MINIMAL PANEL
     // =====================================================================
 
     let shadow = null;
@@ -1100,92 +1161,68 @@
     const PANEL_CSS = `
 :host { all: initial; }
 * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
-.wrap { position: fixed; right: 16px; bottom: 16px; width: 310px; z-index: 2147483647;
-  background: #ffffff; color: #1f2430; border: 1px solid #d9dee8; border-radius: 12px;
+.wrap { position: fixed; right: 16px; bottom: 16px; width: 268px; z-index: 2147483647;
+  background: #fff; color: #19202c; border: 1px solid #d9dee8; border-radius: 12px;
   box-shadow: 0 10px 30px rgba(16,24,40,.18); font-size: 13px; overflow: hidden; }
 .wrap.collapsed .body { display: none; }
-.head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; cursor: pointer;
+.head { display: flex; align-items: center; gap: 8px; padding: 9px 11px;
   background: #f7f9fc; border-bottom: 1px solid #e6ebf3; }
-.head h1 { font-size: 12px; font-weight: 700; margin: 0; flex: 1; letter-spacing: .02em; text-transform: uppercase; color: #4a5468; }
-.dot { width: 9px; height: 9px; border-radius: 50%; background: #9aa4b8; flex: none; }
-.dot.on { background: #16a34a; box-shadow: 0 0 0 3px rgba(22,163,74,.16); }
-.dot.off { background: #9aa4b8; }
-.chev { font-size: 11px; color: #8a94a8; }
-.body { padding: 12px; }
-.row { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; border-bottom: 1px dashed #edf1f7; }
-.row:last-of-type { border-bottom: 0; }
+.head h1 { font-size: 11px; font-weight: 700; margin: 0; flex: 1; letter-spacing: .05em;
+  text-transform: uppercase; color: #5b6677; cursor: pointer; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: #9aa4b8; flex: none; }
+.dot.on { background: #16a34a; box-shadow: 0 0 0 3px rgba(22,163,74,.18); }
+.icon { border: 0; background: none; cursor: pointer; font-size: 12px; color: #8a94a8; padding: 2px 3px; }
+.icon:hover { color: #19202c; }
+.body { padding: 11px; }
+.evt { font-size: 12px; font-weight: 600; color: #5b6677; margin-bottom: 9px; line-height: 1.35; }
+.status { text-align: center; font-size: 19px; font-weight: 800; letter-spacing: .02em;
+  padding: 11px 8px; border-radius: 9px; margin-bottom: 10px; }
+.status.sold { background: #fee2e2; color: #7f1d1d; }
+.status.avail { background: #dcfce7; color: #14532d; }
+.status.maybe { background: #fef3c7; color: #78350f; }
+.status.unknown { background: #e9edf3; color: #42506a; }
+.row { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; }
 .k { color: #6b7488; }
-.v { font-weight: 600; text-align: right; word-break: break-word; }
-.badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; }
-.badge.avail { background: #dcfce7; color: #14532d; }
-.badge.maybe { background: #fef3c7; color: #78350f; }
-.badge.sold { background: #fee2e2; color: #7f1d1d; }
-.badge.unknown { background: #e5e7eb; color: #374151; }
-.warn { margin-top: 8px; padding: 7px 9px; background: #fff7ed; border: 1px solid #fed7aa; color: #7c2d12; border-radius: 7px; font-size: 11.5px; }
-.err { margin-top: 8px; padding: 7px 9px; background: #fef2f2; border: 1px solid #fecaca; color: #7f1d1d; border-radius: 7px; font-size: 11.5px; word-break: break-word; }
-.btns { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 10px; }
-button { font: inherit; font-size: 12px; font-weight: 600; padding: 7px 8px; border-radius: 7px; border: 1px solid #d9dee8; background: #fff; color: #1f2430; cursor: pointer; }
-button:hover { background: #f3f6fb; }
-button.primary { background: #16a34a; border-color: #16a34a; color: #fff; }
-button.primary:hover { background: #15803d; }
-button.danger { background: #dc2626; border-color: #dc2626; color: #fff; }
-button.danger:hover { background: #b91c1c; }
-button:disabled { opacity: .55; cursor: not-allowed; }
+.v { font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }
+.v.ok { color: #16a34a; }
+.v.bad { color: #dc2626; }
+.err { margin-top: 7px; padding: 6px 8px; background: #fef2f2; border: 1px solid #fecaca;
+  color: #7f1d1d; border-radius: 6px; font-size: 11px; word-break: break-word; }
+.btns { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 11px; }
+button.b { font: inherit; font-size: 12px; font-weight: 600; padding: 7px 8px; border-radius: 7px;
+  border: 1px solid #d9dee8; background: #fff; color: #19202c; cursor: pointer; }
+button.b:hover { background: #f3f6fb; }
+button.b.go { background: #16a34a; border-color: #16a34a; color: #fff; }
+button.b.go:hover { background: #15803d; }
+button.b.stop { background: #dc2626; border-color: #dc2626; color: #fff; }
+button.b.stop:hover { background: #b91c1c; }
+button.b:disabled { opacity: .55; cursor: not-allowed; }
 .wide { grid-column: 1 / -1; }
-fieldset { border: 1px solid #e6ebf3; border-radius: 8px; padding: 8px; margin: 10px 0 0; }
-legend { font-size: 11px; color: #6b7488; padding: 0 4px; font-weight: 700; text-transform: uppercase; }
-label { display: block; font-size: 11px; color: #6b7488; margin: 6px 0 2px; }
-input[type=text], input[type=password], input[type=number] { width: 100%; padding: 6px 7px; border: 1px solid #d9dee8; border-radius: 6px; font-size: 12px; background: #fff; color: #1f2430; }
-.check { display: flex; align-items: center; gap: 6px; margin-top: 7px; font-size: 11.5px; color: #4a5468; }
-.check input { margin: 0; }
-.note { font-size: 10.5px; color: #8a94a8; margin-top: 7px; line-height: 1.45; }
-.toast { margin-top: 8px; font-size: 11.5px; padding: 6px 8px; border-radius: 6px; }
+.settings { margin-top: 11px; padding-top: 10px; border-top: 1px solid #e6ebf3; }
+.settings[hidden] { display: none; }
+label { display: block; font-size: 10.5px; color: #6b7488; margin: 7px 0 2px; }
+input { width: 100%; padding: 5px 7px; border: 1px solid #d9dee8; border-radius: 6px;
+  font-size: 12px; background: #fff; color: #19202c; }
+.note { font-size: 10px; color: #8a94a8; margin-top: 8px; line-height: 1.45; }
+.toast { margin-top: 8px; font-size: 11px; padding: 5px 8px; border-radius: 6px; }
 .toast.ok { background: #dcfce7; color: #14532d; }
 .toast.bad { background: #fee2e2; color: #7f1d1d; }
 @media (prefers-color-scheme: dark) {
-  .wrap { background: #161a22; color: #e8ecf4; border-color: #2b3240; }
-  .head { background: #1c222c; border-bottom-color: #2b3240; }
-  .head h1 { color: #9aa4b8; }
-  .row { border-bottom-color: #232a36; }
+  .wrap { background: #161c26; color: #e8ecf4; border-color: #2a3342; }
+  .head { background: #1c2430; border-bottom-color: #2a3342; }
+  .head h1 { color: #a3aec0; }
+  .evt { color: #a3aec0; }
   .k { color: #9aa4b8; }
-  button { background: #222935; border-color: #343d4d; color: #e8ecf4; }
-  button:hover { background: #2a3240; }
-  input[type=text], input[type=password], input[type=number] { background: #1c222c; border-color: #343d4d; color: #e8ecf4; }
-  fieldset { border-color: #2b3240; }
+  .status.sold { background: #2e1416; color: #fca5a5; }
+  .status.avail { background: #0f2e1c; color: #86efac; }
+  .status.maybe { background: #2e2410; color: #fcd34d; }
+  .status.unknown { background: #212a38; color: #b6c1d4; }
+  button.b { background: #222935; border-color: #343d4d; color: #e8ecf4; }
+  button.b:hover { background: #2a3240; }
+  input { background: #1c2430; border-color: #343d4d; color: #e8ecf4; }
+  .settings { border-top-color: #2a3342; }
 }
 `;
-
-    function fmtTime(ts) {
-        if (!ts) return '—';
-        const d = new Date(ts);
-        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    }
-
-    function fmtRelative(ts) {
-        if (!ts) return '—';
-        const diff = ts - Date.now();
-        const abs = Math.abs(diff);
-        const mins = Math.round(abs / 60000);
-        if (mins < 1) return diff >= 0 ? 'under a minute' : 'just now';
-        const txt = mins < 60 ? mins + ' min' : Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm';
-        return diff >= 0 ? 'in ' + txt : txt + ' ago';
-    }
-
-    function fmtDuration(ms) {
-        const mins = Math.round((ms || 0) / 60000);
-        if (mins < 1) return 'under a minute';
-        if (mins < 60) return mins + ' min';
-        const h = Math.floor(mins / 60);
-        const m = mins % 60;
-        return h + 'h' + (m ? ' ' + m + 'm' : '');
-    }
-
-    function badgeClass(state) {
-        if (state === STATES.AVAILABLE) return 'avail';
-        if (state === STATES.AVAILABLE_UNCONFIRMED) return 'maybe';
-        if (state === STATES.SOLD_OUT) return 'sold';
-        return 'unknown';
-    }
 
     function buildPanel() {
         host = document.createElement('div');
@@ -1203,6 +1240,8 @@ input[type=text], input[type=password], input[type=number] { width: 100%; paddin
 
     let toastMsg = null;
     let toastOk = true;
+    let settingsOpen = false;
+
     function toast(msg, ok) {
         toastMsg = msg;
         toastOk = ok !== false;
@@ -1210,166 +1249,208 @@ input[type=text], input[type=password], input[type=number] { width: 100%; paddin
         setTimeout(function () {
             toastMsg = null;
             render();
-        }, 6000);
+        }, 5000);
     }
 
+    /** Full rebuild — only on structural changes, never on the 1s tick. */
     function render() {
         if (!shadow) return;
         const wrap = shadow.querySelector('.wrap');
         if (!wrap) return;
-
         const cfg = loadConfig();
-        const st = loadStatus();
         const collapsed = wrap.classList.contains('collapsed');
-        const state = st.state || STATES.UNKNOWN;
-        const stale = isStale();
-        const late =
-            cfg.monitoring &&
-            typeof st.lastOverdueMs === 'number' &&
-            st.lastOverdueMs > cfg.intervalMinutes * 60 * 1000 * DEFAULTS.lateFactor;
 
         wrap.innerHTML =
             '<div class="head">' +
-            '<span class="dot ' + (cfg.monitoring ? 'on' : 'off') + '"></span>' +
-            '<h1>Booking Monitor</h1>' +
-            '<span class="chev">' + (collapsed ? '▲' : '▼') + '</span>' +
+              '<span class="dot" id="dot"></span>' +
+              '<h1 data-act="collapse">Booking Monitor</h1>' +
+              '<button class="icon" data-act="settings" title="Settings">&#9881;</button>' +
+              '<button class="icon" data-act="collapse" title="Collapse">' + (collapsed ? '&#9650;' : '&#9660;') + '</button>' +
             '</div>' +
             '<div class="body">' +
-            row('Monitoring', cfg.monitoring ? (inFlight ? 'Checking…' : 'Active') : 'Stopped') +
-            row('Availability', '<span class="badge ' + badgeClass(state) + '">' + describeState(state) + '</span>') +
-            row('Verified', st.verified ? 'Yes — inventory checked' : 'No') +
-            row('Last checked', st.lastCheckedAt ? fmtTime(st.lastCheckedAt) + ' (' + fmtRelative(st.lastCheckedAt) + ')' : 'Never') +
-            row('Next check', cfg.monitoring && st.nextCheckAt ? fmtTime(st.nextCheckAt) + ' (' + fmtRelative(st.nextCheckAt) + ')' : '—') +
-            row('Interval', cfg.intervalMinutes + ' min') +
-            row('Checks run', String(st.checkCount || 0)) +
-            (stale ? '<div class="warn"><b>Monitoring looks stalled.</b> The next check is overdue — the tab was probably throttled or the machine slept. It will catch up when this tab is active.</div>' : '') +
-            (!stale && late ? '<div class="warn"><b>Last check ran ' + fmtDuration(st.lastOverdueMs) + ' late.</b> Background tabs get throttled and a sleeping machine freezes timers, so checks can drift. Keep this tab visible for closer-to-exact timing.</div>' : '') +
-            (st.lastError ? '<div class="err"><b>Last error:</b> ' + escapeHtml(st.lastError) + '</div>' : '') +
-            '<div class="btns">' +
-            (cfg.monitoring
-                ? '<button class="danger" data-act="stop">Stop</button>'
-                : '<button class="primary" data-act="start">Start</button>') +
-            '<button data-act="check"' + (inFlight ? ' disabled' : '') + '>Check now</button>' +
-            '<button data-act="test-browser">Test desktop</button>' +
-            '<button data-act="test-telegram">Test Telegram</button>' +
-            '<button class="wide" data-act="open">Open booking page ↗</button>' +
-            '</div>' +
-            '<fieldset><legend>Settings</legend>' +
-            '<label>Check interval (minutes, min ' + DEFAULTS.minIntervalMinutes + ')</label>' +
-            '<input type="number" data-f="interval" min="' + DEFAULTS.minIntervalMinutes + '" max="' + DEFAULTS.maxIntervalMinutes + '" value="' + cfg.intervalMinutes + '">' +
-            '<label>Telegram bot token</label>' +
-            '<input type="password" data-f="token" placeholder="123456:ABC-DEF…" value="' + escapeAttr(cfg.telegramToken) + '">' +
-            '<label>Telegram chat ID</label>' +
-            '<input type="text" data-f="chat" placeholder="123456789" value="' + escapeAttr(cfg.telegramChatId) + '">' +
-            '<div class="check"><input type="checkbox" data-f="browser"' + (cfg.browserNotifications ? ' checked' : '') + '><span>Desktop notifications</span></div>' +
-            '<div class="check"><input type="checkbox" data-f="sound"' + (cfg.sound ? ' checked' : '') + '><span>Alert sound</span></div>' +
-            '<div class="check"><input type="checkbox" data-f="deep"' + (cfg.deepVerify ? ' checked' : '') + '><span>Verify ticket inventory (recommended)</span></div>' +
-            '<div class="check"><input type="checkbox" data-f="reload"' + (cfg.reloadOnCheck ? ' checked' : '') + '><span>Reload page after each check</span></div>' +
-            '<div class="btns"><button class="wide" data-act="save">Save settings</button></div>' +
-            '<div class="note">Credentials are stored only in Tampermonkey storage on this computer. Anyone with access to this browser profile can read them — treat the bot token like a password and revoke it in BotFather if it leaks.</div>' +
-            '</fieldset>' +
-            (toastMsg ? '<div class="toast ' + (toastOk ? 'ok' : 'bad') + '">' + escapeHtml(toastMsg) + '</div>' : '') +
-            '<div class="note">This script never buys tickets and never touches CAPTCHA, login or the Eventbrite waiting room. It only reads public availability data.</div>' +
+              '<div class="evt">' + escapeHtml(EVENT_NAME) + '</div>' +
+              '<div class="status unknown" id="status">UNKNOWN</div>' +
+              '<div class="row"><span class="k">Monitoring</span><span class="v" id="mon">—</span></div>' +
+              '<div class="row"><span class="k">Last refresh</span><span class="v" id="last">—</span></div>' +
+              '<div class="row"><span class="k">Last result</span><span class="v" id="res">—</span></div>' +
+              '<div class="row"><span class="k">Next refresh</span><span class="v" id="next">—</span></div>' +
+              '<div class="row"><span class="k">Checks</span><span class="v" id="counts">—</span></div>' +
+              '<div id="errbox"></div>' +
+              '<div class="btns">' +
+                '<button class="b" id="toggle" data-act="toggle">Start</button>' +
+                '<button class="b" data-act="check">Check now</button>' +
+                '<button class="b wide" data-act="logs">Download logs</button>' +
+              '</div>' +
+              '<div class="settings" id="settings"' + (settingsOpen ? '' : ' hidden') + '>' +
+                '<label>Refresh interval (seconds, min ' + DEFAULTS.minIntervalSeconds + ')</label>' +
+                '<input type="number" data-f="interval" min="' + DEFAULTS.minIntervalSeconds + '" max="' + DEFAULTS.maxIntervalSeconds + '" value="' + cfg.intervalSeconds + '">' +
+                '<label>Telegram bot token</label>' +
+                '<input type="password" data-f="token" placeholder="123456:ABC-DEF…" value="' + escapeAttr(cfg.telegramToken) + '">' +
+                '<label>Telegram chat ID</label>' +
+                '<input type="text" data-f="chat" placeholder="123456789" value="' + escapeAttr(cfg.telegramChatId) + '">' +
+                '<div class="btns">' +
+                  '<button class="b" data-act="save">Save</button>' +
+                  '<button class="b" data-act="test-telegram">Test Telegram</button>' +
+                  '<button class="b wide" data-act="test-browser">Test desktop notification</button>' +
+                '</div>' +
+                '<div class="note">Credentials stay in Tampermonkey storage on this computer. Treat the bot token like a password.</div>' +
+              '</div>' +
+              (toastMsg ? '<div class="toast ' + (toastOk ? 'ok' : 'bad') + '">' + escapeHtml(toastMsg) + '</div>' : '') +
             '</div>';
 
         if (collapsed) wrap.classList.add('collapsed');
         wireEvents(wrap);
+        refreshDynamic();
     }
 
-    function row(k, v) {
-        return '<div class="row"><span class="k">' + k + '</span><span class="v">' + v + '</span></div>';
-    }
+    /** Cheap per-second update — touches text only, so inputs keep focus. */
+    function refreshDynamic() {
+        if (!shadow) return;
+        const q = function (id) { return shadow.getElementById(id); };
+        const cfg = loadConfig();
+        const st = loadStatus();
+        const now = Date.now();
 
-    function escapeHtml(s) {
-        return String(s === null || s === undefined ? '' : s)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;');
-    }
-    function escapeAttr(s) {
-        return escapeHtml(s).replace(/"/g, '&quot;');
+        const dot = q('dot');
+        if (dot) dot.className = 'dot' + (cfg.monitoring ? ' on' : '');
+
+        const statusEl = q('status');
+        if (statusEl) {
+            const label = panelStatusLabel(st.state);
+            statusEl.textContent = label;
+            statusEl.className =
+                'status ' +
+                (st.state === STATES.AVAILABLE ? 'avail'
+                    : st.state === STATES.AVAILABLE_UNCONFIRMED ? 'maybe'
+                    : st.state === STATES.SOLD_OUT ? 'sold' : 'unknown');
+        }
+
+        const mon = q('mon');
+        if (mon) mon.textContent = cfg.monitoring ? (inFlight ? 'CHECKING…' : 'RUNNING') : 'STOPPED';
+
+        const last = q('last');
+        if (last) last.textContent = st.lastSuccessAt ? clockTime(st.lastSuccessAt) : '—';
+
+        const res = q('res');
+        if (res) {
+            if (st.lastOk === true) {
+                res.textContent = 'SUCCESS';
+                res.className = 'v ok';
+            } else if (st.lastOk === false) {
+                res.textContent = 'FAILED';
+                res.className = 'v bad';
+            } else {
+                res.textContent = '—';
+                res.className = 'v';
+            }
+        }
+
+        const next = q('next');
+        if (next) {
+            if (!cfg.monitoring || !st.nextCheckAt) {
+                next.textContent = '—';
+            } else if (inFlight) {
+                next.textContent = 'checking…';
+            } else {
+                const secs = Math.max(0, Math.ceil((st.nextCheckAt - now) / 1000));
+                next.textContent = secs + 's';
+            }
+        }
+
+        const counts = q('counts');
+        if (counts) {
+            counts.innerHTML =
+                '<span class="ok">' + (st.successCount || 0) + ' ok</span> / ' +
+                '<span class="bad">' + (st.failureCount || 0) + ' failed</span>';
+        }
+
+        const errbox = q('errbox');
+        if (errbox) {
+            const backingOff = (st.consecutiveFailures || 0) > 0;
+            errbox.innerHTML =
+                st.lastOk === false && st.lastError
+                    ? '<div class="err">' +
+                      (st.lastHttp ? 'HTTP ' + st.lastHttp + ' — ' : '') +
+                      escapeHtml(st.lastError) +
+                      (backingOff
+                          ? ' — backing off, ' + st.consecutiveFailures + ' consecutive failure' +
+                            (st.consecutiveFailures === 1 ? '' : 's')
+                          : '') +
+                      '</div>'
+                    : '';
+        }
+
+        const toggle = q('toggle');
+        if (toggle) {
+            toggle.textContent = cfg.monitoring ? 'Stop' : 'Start';
+            toggle.className = 'b ' + (cfg.monitoring ? 'stop' : 'go');
+        }
     }
 
     function wireEvents(wrap) {
-        const head = wrap.querySelector('.head');
-        if (head) {
-            head.addEventListener('click', function () {
-                wrap.classList.toggle('collapsed');
-                render();
-            });
-        }
-
-        wrap.querySelectorAll('[data-act]').forEach(function (btn) {
-            btn.addEventListener('click', async function (ev) {
+        wrap.querySelectorAll('[data-act]').forEach(function (el) {
+            el.addEventListener('click', async function (ev) {
                 ev.stopPropagation();
-                const act = btn.getAttribute('data-act');
+                const act = el.getAttribute('data-act');
 
-                if (act === 'start') {
-                    const perm = await requestNotificationPermission();
-                    if (perm !== 'granted' && perm !== 'unsupported') {
-                        toast('Desktop notifications are blocked — Telegram still works.', false);
+                if (act === 'collapse') {
+                    wrap.classList.toggle('collapsed');
+                    render();
+                } else if (act === 'settings') {
+                    settingsOpen = !settingsOpen;
+                    render();
+                } else if (act === 'toggle') {
+                    if (loadConfig().monitoring) {
+                        stopMonitoring();
+                    } else {
+                        const perm = await requestNotificationPermission();
+                        if (perm !== 'granted' && perm !== 'unsupported') {
+                            toast('Desktop notifications blocked — Telegram still works.', false);
+                        }
+                        startMonitoring();
                     }
-                    startMonitoring();
-                } else if (act === 'stop') {
-                    stopMonitoring();
                 } else if (act === 'check') {
                     const r = await runCheck(true);
                     if (r && r.skipped) toast('Skipped: ' + r.skipped, false);
-                    else if (r && r.error) toast('Checked with errors: ' + r.error, false);
-                    else toast('Check complete.', true);
-                } else if (act === 'open') {
-                    window.open(EVENT_URL, '_blank');
+                } else if (act === 'logs') {
+                    const n = loadLog().length;
+                    if (!n) {
+                        toast('No log entries yet.', false);
+                    } else {
+                        toast(downloadLog() ? 'Downloaded ' + n + ' entries.' : 'Download failed.', true);
+                    }
+                } else if (act === 'save') {
+                    const g = function (f) { return wrap.querySelector('[data-f="' + f + '"]'); };
+                    const before = loadConfig().intervalSeconds;
+                    const cfg = saveConfig({
+                        intervalSeconds: g('interval') ? g('interval').value : before,
+                        telegramToken: g('token') ? g('token').value.trim() : '',
+                        telegramChatId: g('chat') ? g('chat').value.trim() : ''
+                    });
+                    if (cfg.monitoring && cfg.intervalSeconds !== before) {
+                        saveStatus({ nextCheckAt: Date.now() + cfg.intervalSeconds * 1000 });
+                    }
+                    toast('Saved — every ' + cfg.intervalSeconds + 's.', true);
                 } else if (act === 'test-browser') {
                     const perm = await requestNotificationPermission();
-                    showDesktopNotification(
-                        'Test — Booking Monitor',
-                        'This is a test notification.\n' + EVENT_NAME + '\n' + EVENT_URL
-                    );
+                    showDesktopNotification('Test — Booking Monitor', 'Test notification.\n' + EVENT_URL);
                     if (loadConfig().sound) playAlertSound();
-                    toast(
-                        perm === 'granted' || perm === 'unsupported'
-                            ? 'Test notification sent.'
-                            : 'Permission is "' + perm + '" — the OS may suppress it.',
-                        perm === 'granted' || perm === 'unsupported'
-                    );
+                    toast(perm === 'granted' || perm === 'unsupported'
+                        ? 'Test notification sent.' : 'Permission is "' + perm + '".',
+                        perm === 'granted' || perm === 'unsupported');
                 } else if (act === 'test-telegram') {
                     const cfg = loadConfig();
                     if (!cfg.telegramToken || !cfg.telegramChatId) {
-                        toast('Enter a bot token and chat ID, then Save, then retry.', false);
+                        toast('Enter a token and chat ID, then Save.', false);
                         return;
                     }
-                    btn.disabled = true;
                     try {
-                        await sendTelegram(
-                            cfg.telegramToken,
-                            cfg.telegramChatId,
-                            '✅ <b>Booking Monitor test</b>\n\n' +
-                                'Telegram notifications are working.\n' +
-                                EVENT_NAME +
-                                '\n<a href="' + EVENT_URL + '">Open the booking page</a>'
-                        );
+                        await sendTelegram(cfg.telegramToken, cfg.telegramChatId,
+                            '✅ <b>Booking Monitor test</b>\n' + escapeHtml(EVENT_NAME_FULL));
                         toast('Telegram test sent.', true);
                     } catch (e) {
                         toast(e.message, false);
-                    } finally {
-                        btn.disabled = false;
                     }
-                } else if (act === 'save') {
-                    const q = function (sel) {
-                        return wrap.querySelector('[data-f="' + sel + '"]');
-                    };
-                    const before = loadConfig().intervalMinutes;
-                    const cfg = saveConfig({
-                        intervalMinutes: q('interval') ? q('interval').value : before,
-                        telegramToken: q('token') ? q('token').value.trim() : '',
-                        telegramChatId: q('chat') ? q('chat').value.trim() : '',
-                        browserNotifications: q('browser') ? q('browser').checked : true,
-                        sound: q('sound') ? q('sound').checked : true,
-                        deepVerify: q('deep') ? q('deep').checked : true,
-                        reloadOnCheck: q('reload') ? q('reload').checked : false
-                    });
-                    if (cfg.monitoring && cfg.intervalMinutes !== before) scheduleNext(Date.now());
-                    toast('Settings saved (interval ' + cfg.intervalMinutes + ' min).', true);
                 }
             });
         });
@@ -1380,12 +1461,10 @@ input[type=text], input[type=password], input[type=number] { width: 100%; paddin
     // =====================================================================
 
     function boot() {
-        if (window.top !== window.self) return; // belt and braces alongside @noframes
+        if (window.top !== window.self) return;
         if (document.getElementById('ebm-monitor-host')) return;
 
         buildPanel();
-
-        // Catch up immediately if we came back from a refresh/sleep past the deadline.
         heartbeat();
         heartbeatTimer = setInterval(heartbeat, DEFAULTS.heartbeatMs);
 
@@ -1399,9 +1478,7 @@ input[type=text], input[type=password], input[type=number] { width: 100%; paddin
             releaseLock();
         });
 
-        console.info(
-            '[EBM] Booking monitor loaded for event ' + EVENT_ID + '. Monitoring=' + loadConfig().monitoring
-        );
+        console.info('[EBM] v2 loaded — interval ' + loadConfig().intervalSeconds + 's');
     }
 
     if (document.readyState === 'loading') {

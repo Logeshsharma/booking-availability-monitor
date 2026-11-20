@@ -73,7 +73,10 @@ const SCENARIOS = {
   'conflict':        { listing: 'listing-conflict.html',        checkout: 'checkout-sold-out.html' },
   'blocked':         { listing: 'listing-blocked.html',         checkout: 'checkout-blocked.html' },
   'not-yet-on-sale': { listing: 'listing-not-yet-on-sale.html', checkout: 'checkout-sold-out.html' },
-  'network-error':   { listing: null,                           checkout: null }
+  'network-error':   { listing: null,                           checkout: null },
+  'rate-limited':    { listing: null, checkout: null, http: 429 },
+  'server-error':    { listing: null, checkout: null, http: 503 },
+  'timeout':         { listing: null, checkout: null, timeout: true }
 };
 let scenario = 'sold-out';
 let telegramMode = 'ok';
@@ -143,6 +146,14 @@ window.GM_xmlhttpRequest = (opts) => {
   const file = isCheckout ? cfg.checkout : cfg.listing;
   log('FETCH', (isCheckout ? 'checkout' : 'listing ') + ' → ' + (file || 'SIMULATED NETWORK ERROR'));
 
+  if (cfg.timeout) {
+    setTimeout(() => opts.ontimeout && opts.ontimeout(), 120);
+    return;
+  }
+  if (cfg.http) {
+    setTimeout(() => opts.onload && opts.onload({ status: cfg.http, responseText: '' }), 120);
+    return;
+  }
   if (!file) {
     setTimeout(() => opts.onerror && opts.onerror(), 120);
     return;
@@ -159,7 +170,10 @@ document.getElementById('reset').onclick = () => {
   log('HARNESS', 'cleared stored state — reload to start clean');
 };
 document.getElementById('dump').onclick = () => {
-  Object.keys(localStorage).sort().forEach(k => log('STORE', k + ' = ' + localStorage.getItem(k)));
+  Object.keys(localStorage).sort().forEach(k => {
+    const v = localStorage.getItem(k);
+    log('STORE', k + ' = ' + (v.length > 300 ? v.slice(0, 300) + `… (${v.length} chars)` : v));
+  });
 };
 document.getElementById('clearlog').onclick = () => { logEl.textContent = ''; };
 

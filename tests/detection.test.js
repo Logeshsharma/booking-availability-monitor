@@ -385,24 +385,150 @@ test('notification de-duplication', async (t) => {
 });
 
 // ---------------------------------------------------------------------------
-test('monitoring interval configuration', async (t) => {
-    await t.test('defaults to 30 minutes for absent or nonsense input', () => {
-        assert.strictEqual(D.clampInterval(undefined), 30);
-        assert.strictEqual(D.clampInterval(null), 30);
-        assert.strictEqual(D.clampInterval('abc'), 30);
-        assert.strictEqual(D.clampInterval(0), 30);
-        assert.strictEqual(D.clampInterval(-5), 30);
+test('refresh interval configuration', async (t) => {
+    await t.test('defaults to 15 seconds for absent or nonsense input', () => {
+        assert.strictEqual(D.clampIntervalSeconds(undefined), 15);
+        assert.strictEqual(D.clampIntervalSeconds(null), 15);
+        assert.strictEqual(D.clampIntervalSeconds('abc'), 15);
+        assert.strictEqual(D.clampIntervalSeconds(0), 15);
+        assert.strictEqual(D.clampIntervalSeconds(-5), 15);
     });
 
     await t.test('accepts valid custom intervals', () => {
-        assert.strictEqual(D.clampInterval(15), 15);
-        assert.strictEqual(D.clampInterval('45'), 45);
-        assert.strictEqual(D.clampInterval(12.4), 12);
+        assert.strictEqual(D.clampIntervalSeconds(15), 15);
+        assert.strictEqual(D.clampIntervalSeconds('60'), 60);
+        assert.strictEqual(D.clampIntervalSeconds(30.4), 30);
     });
 
-    await t.test('clamps below the politeness floor and above the ceiling', () => {
-        assert.strictEqual(D.clampInterval(1), D.DEFAULTS.minIntervalMinutes);
-        assert.strictEqual(D.clampInterval(99999), D.DEFAULTS.maxIntervalMinutes);
+    await t.test('clamps below the floor and above the ceiling', () => {
+        assert.strictEqual(D.clampIntervalSeconds(1), D.DEFAULTS.minIntervalSeconds);
+        assert.strictEqual(D.clampIntervalSeconds(999999), D.DEFAULTS.maxIntervalSeconds);
+    });
+
+    await t.test('the shipped default really is 15 seconds', () => {
+        assert.strictEqual(D.DEFAULTS.intervalSeconds, 15);
+    });
+});
+
+// ---------------------------------------------------------------------------
+test('back-off on repeated failures', async (t) => {
+    const INTERVAL = 15000;
+
+    await t.test('no failures ⇒ the plain configured interval', () => {
+        assert.strictEqual(D.backoffDelayMs(0, null, INTERVAL), INTERVAL);
+    });
+
+    await t.test('failures grow the delay exponentially', () => {
+        const d1 = D.backoffDelayMs(1, null, INTERVAL);
+        const d2 = D.backoffDelayMs(2, null, INTERVAL);
+        const d3 = D.backoffDelayMs(3, null, INTERVAL);
+        assert.strictEqual(d1, D.DEFAULTS.backoffStartMs);
+        assert.strictEqual(d2, D.DEFAULTS.backoffStartMs * 2);
+        assert.strictEqual(d3, D.DEFAULTS.backoffStartMs * 4);
+        assert.ok(d1 < d2 && d2 < d3, 'delay must increase');
+    });
+
+    await t.test('a rate limit backs off harder than a generic failure', () => {
+        const generic = D.backoffDelayMs(1, 500, INTERVAL);
+        const limited = D.backoffDelayMs(1, 429, INTERVAL);
+        const blocked = D.backoffDelayMs(1, 403, INTERVAL);
+        assert.ok(limited > generic, '429 must back off more than a 500');
+        assert.ok(blocked > generic, '403 must back off more than a 500');
+        assert.strictEqual(limited, D.DEFAULTS.rateLimitStartMs);
+    });
+
+    await t.test('the delay is capped so it never grows without bound', () => {
+        assert.strictEqual(D.backoffDelayMs(50, 429, INTERVAL), D.DEFAULTS.backoffMaxMs);
+        assert.strictEqual(D.backoffDelayMs(99, null, INTERVAL), D.DEFAULTS.backoffMaxMs);
+    });
+
+    await t.test('back-off is never shorter than the configured interval', () => {
+        for (let f = 0; f <= 10; f++) {
+            assert.ok(D.backoffDelayMs(f, null, INTERVAL) >= INTERVAL, 'failures=' + f);
+        }
+    });
+});
+
+// ---------------------------------------------------------------------------
+test('HTTP error descriptions', async (t) => {
+    await t.test('names rate limiting and blocking explicitly', () => {
+        assert.match(D.describeHttpError(429), /rate limited/i);
+        assert.match(D.describeHttpError(403), /blocked/i);
+    });
+
+    await t.test('does not repeat the status inside the message', () => {
+        // formatLogLine and the panel render the status separately.
+        assert.doesNotMatch(D.describeHttpError(429), /429/);
+        assert.doesNotMatch(D.describeHttpError(503), /503/);
+    });
+
+    await t.test('describes server errors and unknown statuses', () => {
+        assert.match(D.describeHttpError(503), /server error/i);
+        assert.strictEqual(D.describeHttpError(418), 'HTTP 418');
+    });
+
+    await t.test('falls back to the supplied message when there is no status', () => {
+        assert.strictEqual(D.describeHttpError(0, 'Request timeout'), 'Request timeout');
+        assert.strictEqual(D.describeHttpError(null, 'Network error'), 'Network error');
+        assert.strictEqual(D.describeHttpError(null), 'Request failed');
+    });
+});
+
+// ---------------------------------------------------------------------------
+test('log formatting', async (t) => {
+    // 16:30:00 local time on a fixed date
+    const at = new Date(2026, 10, 20, 16, 30, 0).getTime();
+
+    await t.test('a successful check matches the required format', () => {
+        assert.strictEqual(
+            D.formatLogLine({ at, ok: true, http: 200, state: S.SOLD_OUT, error: null }),
+            '[16:30:00] SUCCESS - SOLD OUT'
+        );
+        assert.strictEqual(
+            D.formatLogLine({ at, ok: true, http: 200, state: S.AVAILABLE, error: null }),
+            '[16:30:00] SUCCESS - AVAILABLE'
+        );
+    });
+
+    await t.test('a failure without a status matches the required format', () => {
+        assert.strictEqual(
+            D.formatLogLine({ at, ok: false, http: null, state: null, error: 'Request timeout' }),
+            '[16:30:00] ERROR - Request timeout'
+        );
+    });
+
+    await t.test('a failure with a status includes it', () => {
+        assert.strictEqual(
+            D.formatLogLine({
+                at, ok: false, http: 429, state: null,
+                error: D.describeHttpError(429)
+            }),
+            '[16:30:00] ERROR (HTTP 429) - Rate limited by Eventbrite'
+        );
+    });
+
+    await t.test('zero-pads the clock', () => {
+        const early = new Date(2026, 10, 20, 9, 5, 3).getTime();
+        assert.strictEqual(D.clockTime(early), '09:05:03');
+    });
+
+    await t.test('every state has a log label', () => {
+        for (const st of Object.values(S)) {
+            assert.ok(D.logStateLabel(st).length > 0, st);
+        }
+        assert.strictEqual(D.logStateLabel(S.AVAILABLE_UNCONFIRMED), 'AVAILABLE (UNCONFIRMED)');
+    });
+});
+
+// ---------------------------------------------------------------------------
+test('panel status collapses to three values', async (t) => {
+    await t.test('SOLD OUT / AVAILABLE / UNKNOWN', () => {
+        assert.strictEqual(D.panelStatusLabel(S.SOLD_OUT), 'SOLD OUT');
+        assert.strictEqual(D.panelStatusLabel(S.AVAILABLE), 'AVAILABLE');
+        assert.strictEqual(D.panelStatusLabel(S.AVAILABLE_UNCONFIRMED), 'AVAILABLE?');
+        assert.strictEqual(D.panelStatusLabel(S.UNKNOWN), 'UNKNOWN');
+        assert.strictEqual(D.panelStatusLabel(S.SALES_ENDED), 'UNKNOWN');
+        assert.strictEqual(D.panelStatusLabel(null), 'UNKNOWN');
     });
 });
 

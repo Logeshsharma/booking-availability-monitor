@@ -3,290 +3,67 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Booking Availability Monitor — LDS Part 2 Exam, February 2027</title>
-<meta name="description" content="Setup dashboard for a Tampermonkey userscript that monitors the Eventbrite booking page for the RCS England Licence in Dental Surgery Part 2 Exam (February 2027) and alerts by desktop notification and Telegram when tickets genuinely become available.">
+<title>Booking Monitor — LDS Part 2 Exam, Feb 2027</title>
+<meta name="description" content="Install page for a Tampermonkey userscript that checks the LDS Part 2 Exam Eventbrite page every 15 seconds and alerts when tickets become available.">
 <meta name="color-scheme" content="light dark">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8E%9F%EF%B8%8F%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
-<div class="wrap">
+<main>
 
-<header>
-  <p class="eyebrow">Booking Availability Monitor</p>
-  <h1>Licence in Dental Surgery Part&nbsp;2 Exam — February&nbsp;2027</h1>
+  <h1>Booking Monitor</h1>
   <p class="lede">
-    A browser-only watcher for the Royal College of Surgeons of England exam booking page on
-    Eventbrite. It checks whether a ticket can genuinely be selected and alerts you by desktop
-    notification and Telegram the moment that changes. No backend, no database, no paid hosting.
+    Checks the <a id="event-link" href="#" rel="noopener">LDS Part 2 Exam (Feb 2027)</a>
+    Eventbrite page every 15 seconds and alerts you by desktop notification and Telegram
+    when a ticket can actually be booked.
   </p>
-</header>
-
-<!-- ================= HOW THIS WORKS ================= -->
-<section id="architecture">
-  <h2><span class="num">1</span> How this works</h2>
-  <p class="sub">Two pieces, and only one of them does the monitoring.</p>
 
   <div class="note">
-    <p><strong>This page cannot monitor anything, and it cannot show you live status.</strong></p>
-    <p>
-      A page served from <code>logeshsharma.github.io</code> is a different browser origin from
-      <code>eventbrite.co.uk</code>, and it has no access to Tampermonkey's storage. There is no
-      safe, reliable way to bridge the two without a backend — so this site deliberately does not
-      try. Every live number lives in the userscript panel on the Eventbrite page itself.
-      Nothing on this page is a live reading.
-    </p>
+    Live status is in the monitor panel on the Eventbrite page, not here.
+    This page can't read it — different browser origin.
   </div>
 
-  <div class="grid">
-    <div class="card">
-      <p><span class="badge info">Component A</span></p>
-      <h3>This dashboard (GitHub Pages)</h3>
-      <p class="sub" style="margin-bottom:0">
-        Setup instructions, the userscript installer, the Telegram walkthrough, and a working
-        test of your browser's notification permission. A static site — that is all it can be.
-      </p>
-    </div>
-    <div class="card">
-      <p><span class="badge ok">Component B</span></p>
-      <h3>The Tampermonkey userscript</h3>
-      <p class="sub" style="margin-bottom:0">
-        Runs on the Eventbrite page itself. Does the actual checking, holds all state and
-        credentials, draws a control panel, and sends the alerts. <strong>All live status and
-        every Start/Stop control is here.</strong>
-      </p>
-    </div>
-  </div>
-</section>
+  <h2>Install</h2>
+  <ol>
+    <li>Install <a href="https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo" target="_blank" rel="noopener">Tampermonkey</a>.</li>
+    <li>Click <strong>Install the userscript</strong> and confirm.</li>
+    <li>Open the booking page. The panel appears bottom-right.</li>
+    <li>Press <strong>Start</strong>, and leave the tab open.</li>
+  </ol>
 
-<!-- ================= WHAT IT WATCHES ================= -->
-<section id="target">
-  <h2><span class="num">2</span> What is being watched</h2>
-  <p class="sub">Facts recorded when the detection logic was built and verified against the live page.</p>
-
-  <div class="card">
-    <dl class="facts">
-      <div class="fact"><dt>Event</dt><dd>Licence in Dental Surgery Part 2 Exam February 2027</dd></div>
-      <div class="fact"><dt>Organiser</dt><dd>The Royal College of Surgeons of England</dd></div>
-      <div class="fact"><dt>Eventbrite event ID</dt><dd><code>2004570995810</code></dd></div>
-      <div class="fact"><dt>Exam dates</dt><dd>16–27 February 2027, London</dd></div>
-      <div class="fact"><dt>Exam fee</dt><dd>£1,793</dd></div>
-      <div class="fact"><dt>Ticket class</dt><dd>LDS Part 2 February 2027 Booking</dd></div>
-      <div class="fact"><dt>Booking opened</dt><dd>17 November 2026, 09:00 (Europe/London)</dd></div>
-      <div class="fact"><dt>Booking closes</dt><dd>15 December 2026, 17:00 (Europe/London)</dd></div>
-      <div class="fact"><dt>Booking page</dt><dd><a id="event-link" href="#" rel="noopener">Open on Eventbrite ↗</a></dd></div>
-      <div class="fact">
-        <dt>State when built</dt>
-        <dd><span class="badge bad">Sold out</span> <span class="badge neutral" id="asof">20 Nov 2026</span></dd>
-      </div>
-    </dl>
-    <p class="sub" style="margin:14px 0 0; font-size:13.5px">
-      That “state when built” is a fixed historical note from when this was developed — not a live
-      reading. For the current state, open the Eventbrite page and read the userscript panel.
-    </p>
-  </div>
-</section>
-
-<!-- ================= DETECTION ================= -->
-<section id="detection">
-  <h2><span class="num">3</span> How availability is decided</h2>
-  <p class="sub">A visible button is not availability. Three independent signals are read, and a ticket must be genuinely orderable.</p>
-
-  <div class="card">
-    <div class="tablewrap">
-      <table>
-        <thead>
-          <tr><th>Signal</th><th>Source</th><th>What it proves</th></tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td><code>salesStatus</code></td>
-            <td>The page's own <code>__NEXT_DATA__</code> payload</td>
-            <td>Eventbrite's internal verdict: <code>sold_out</code>, <code>on_sale</code>, <code>sales_ended</code>…</td>
-          </tr>
-          <tr>
-            <td><code>offers.availability</code></td>
-            <td>schema.org JSON-LD in the page head</td>
-            <td>Independent corroboration: <code>SoldOut</code> vs <code>InStock</code></td>
-          </tr>
-          <tr>
-            <td>Sold-out marker</td>
-            <td><code>conversion-bar-sold-out-signal</code> in the DOM</td>
-            <td>Vetoes an “available” reading if it is still present</td>
-          </tr>
-          <tr>
-            <td><code>has_available_tickets</code><br><code>maximum_quantity_per_order</code></td>
-            <td>Eventbrite checkout widget inventory</td>
-            <td><strong>The decisive test</strong> — whether a quantity can actually be selected</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-
-    <h3>The rules that prevent false alarms</h3>
-    <ul class="ticks">
-      <li><strong>Available</strong> requires the inventory to report available tickets <em>and</em> at least one ticket row whose per-order maximum is above zero.</li>
-      <li>A ticket row that renders but caps quantity at <code>0</code> is <strong>not</strong> availability — that is exactly the “button exists, booking doesn't” trap.</li>
-      <li>Sold out with an open waitlist is still <strong>sold out</strong>. Joining a waitlist is not booking.</li>
-      <li>If two signals disagree about whether you can book, the result is <strong>Unknown</strong> — never “available”.</li>
-      <li>If Eventbrite serves a bot check, a queue page, or anything unparseable, the result is <strong>Unknown</strong>.</li>
-    </ul>
-
-    <h3>The states you will see</h3>
-    <p>
-      <span class="badge ok">Available</span>
-      <span class="badge warn">Possibly available (unconfirmed)</span>
-      <span class="badge bad">Sold out</span>
-      <span class="badge neutral">Not yet on sale</span>
-      <span class="badge neutral">Sales ended</span>
-      <span class="badge neutral">Unknown</span>
-    </p>
-    <p class="sub" style="margin-bottom:0">
-      <strong>Possibly available</strong> means the listing suggested an opening but the inventory
-      check could not confirm it. It still alerts you — for a £1,793 exam seat a clearly-labelled
-      maybe beats a missed opening — but it is explicitly not a confirmed result.
-    </p>
-  </div>
-</section>
-
-<!-- ================= INSTALL ================= -->
-<section id="install">
-  <h2><span class="num">4</span> Install the monitor</h2>
-  <p class="sub">Two minutes, desktop Chrome, Edge, Firefox or Safari.</p>
-
-  <div class="card">
-    <ol class="steps">
-      <li>
-        Install the <strong>Tampermonkey</strong> extension —
-        <a href="https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo" target="_blank" rel="noopener">Chrome / Edge</a>,
-        <a href="https://addons.mozilla.org/firefox/addon/tampermonkey/" target="_blank" rel="noopener">Firefox</a>,
-        or <a href="https://apps.apple.com/app/tampermonkey/id1482490089" target="_blank" rel="noopener">Safari</a>.
-      </li>
-      <li>Click <strong>Install the userscript</strong> below. Tampermonkey opens its install screen — review the permissions and confirm.</li>
-      <li>Open the Eventbrite booking page. A <strong>Booking Monitor</strong> panel appears in the bottom-right corner.</li>
-      <li>Set your interval (30 minutes by default), optionally add your Telegram details, and press <strong>Save settings</strong>.</li>
-      <li>Press <strong>Start</strong>. Allow notifications when the browser asks. Leave the tab open.</li>
-    </ol>
-
-    <div class="btns">
-      <a class="btn primary" id="install-link" href="userscript/booking-monitor.user.js">Install the userscript</a>
-      <a class="btn" id="source-link" href="#" target="_blank" rel="noopener">View source on GitHub</a>
-      <a class="btn" id="event-link-2" href="#" target="_blank" rel="noopener">Open the booking page ↗</a>
-    </div>
-
-    <div class="note warn" style="margin-top:18px">
-      <p style="margin:0">
-        <strong>The tab has to stay open.</strong> This is a browser script, so it only runs while
-        the browser is running and the machine is awake. Close the tab, quit the browser, or let the
-        laptop sleep and checking stops until you come back.
-      </p>
-    </div>
-  </div>
-</section>
-
-<!-- ================= NOTIFICATIONS ================= -->
-<section id="notifications">
-  <h2><span class="num">5</span> Notifications</h2>
-  <p class="sub">Desktop alerts work immediately. Telegram reaches your phone.</p>
-
-  <div class="card">
-    <h3>Desktop notifications</h3>
-    <p>
-      The userscript raises a system notification with an alert tone and the booking link. Use the
-      button below to confirm this browser will actually show notifications — it tests this site's
-      own permission, which is a good proxy for whether the alerts will get through.
-    </p>
-    <div class="strip">
-      <span class="dot" id="perm-dot"></span>
-      <span>Notification permission on this site: <strong id="perm-state">checking…</strong></span>
-    </div>
-    <div class="btns">
-      <button class="btn primary" id="test-notify" type="button">Send a test notification</button>
-      <button class="btn" id="test-sound" type="button">Play the alert sound</button>
-    </div>
-    <p id="notify-result" class="sub" style="margin:14px 0 0" hidden></p>
+  <div class="btns">
+    <a class="btn primary" id="install-link" href="userscript/booking-monitor.user.js">Install the userscript</a>
+    <a class="btn" id="event-link-2" href="#" target="_blank" rel="noopener">Open booking page</a>
   </div>
 
-  <div class="card">
-    <h3>Telegram alerts</h3>
-    <div class="note bad">
-      <p style="margin:0">
-        <strong>Never type your bot token into this page.</strong> It is a public website. There is
-        deliberately no token field here. Your credentials belong only in the userscript panel on
-        the Eventbrite page, where Tampermonkey keeps them on your own computer.
-      </p>
-    </div>
-    <ol class="steps">
-      <li>In Telegram, message <a href="https://t.me/BotFather" target="_blank" rel="noopener"><strong>@BotFather</strong></a> and send <code>/newbot</code>. Follow the prompts; it replies with a bot token like <code>123456789:AAE…</code>.</li>
-      <li>Open a chat with your new bot and send it any message — a bot cannot message you first.</li>
-      <li>Get your chat ID by opening this URL in a browser tab, with your real token substituted in:
-        <pre><code>https://api.telegram.org/bot&lt;YOUR_TOKEN&gt;/getUpdates</code></pre>
-        Find <code>"chat":{"id":<strong>123456789</strong>}</code> in the response. That number is your chat ID.
-      </li>
-      <li>Paste both values into the userscript panel on the Eventbrite page, press <strong>Save settings</strong>, then press <strong>Test Telegram</strong>.</li>
-    </ol>
-    <h3>Keeping the token safe</h3>
-    <ul class="ticks">
-      <li>It is stored in Tampermonkey's local storage on this computer only — never committed to this repository, never sent anywhere except <code>api.telegram.org</code>.</li>
-      <li>Anyone with access to your browser profile can read it. Treat it like a password.</li>
-      <li>If it leaks, send <code>/revoke</code> to BotFather and issue a new one.</li>
-      <li>A bot token lets someone post as your bot. It does not give access to your Telegram account.</li>
-    </ul>
-  </div>
-</section>
+  <h2>Telegram (optional)</h2>
+  <ol>
+    <li>Message <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a>, send <code>/newbot</code>, copy the token.</li>
+    <li>Send your new bot any message.</li>
+    <li>Open <code>api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code> and copy <code>chat.id</code>.</li>
+    <li>Paste both into the panel's <strong>⚙</strong> settings — <strong>not</strong> into this page.</li>
+  </ol>
 
-<!-- ================= RELIABILITY ================= -->
-<section id="reliability">
-  <h2><span class="num">6</span> What it will and will not do</h2>
-  <p class="sub">The honest limits, so a missed alert is never a surprise.</p>
-
-  <div class="grid">
-    <div class="card">
-      <h3 style="margin-top:0">It does</h3>
-      <ul class="ticks">
-        <li>Check on your interval, 30 minutes by default</li>
-        <li>Survive page refreshes and browser restarts</li>
-        <li>Catch up straight away after sleep or throttling</li>
-        <li>Alert once per genuine transition into availability</li>
-        <li>Verify real ticket inventory, not button presence</li>
-        <li>Warn you in the panel if checking has stalled</li>
-        <li>Keep one check in flight at a time, across tabs</li>
-        <li>Report <strong>Unknown</strong> rather than guess</li>
-      </ul>
-    </div>
-    <div class="card">
-      <h3 style="margin-top:0">It does not</h3>
-      <ul class="ticks crosses">
-        <li>Buy tickets or fill in any booking form</li>
-        <li>Touch CAPTCHA, logins, or the Eventbrite queue</li>
-        <li>Run with the browser closed or the machine asleep</li>
-        <li>Promise checks land at exactly 30-minute marks</li>
-        <li>Show live status on this GitHub Pages site</li>
-        <li>Send your credentials anywhere but Telegram</li>
-      </ul>
-    </div>
+  <div class="note warn">
+    Never put your bot token on this public page. There is deliberately no field for it.
+    Credentials belong in Tampermonkey storage on your own machine.
   </div>
 
-  <div class="card">
-    <h3 style="margin-top:0">On timing</h3>
-    <p style="margin-bottom:0">
-      Browsers throttle timers in background tabs and freeze them when a machine sleeps, so a check
-      scheduled for 30 minutes away can land late. The script stores a deadline rather than trusting
-      a timer, and checks whether it is overdue every 15 seconds and whenever the tab regains focus —
-      so it catches up quickly. It cannot run while the browser is closed, and it does not pretend
-      otherwise. The panel shows a stall warning when a check is badly overdue.
-    </p>
-  </div>
-</section>
+  <h2>Notes</h2>
+  <ul>
+    <li>Only runs while the browser is open and the machine is awake.</li>
+    <li>Backs off automatically if Eventbrite rate-limits the 15s polling.</li>
+    <li>Alerts only on a verified change to available, once per change.</li>
+    <li>Never buys tickets, never touches CAPTCHA, logins or the queue.</li>
+  </ul>
 
-<!-- ================= FOOTER ================= -->
-<footer>
-  <p><strong>Booking Availability Monitor</strong> — a static dashboard plus a Tampermonkey userscript. No backend, no database, no tracking, no analytics.</p>
-  <p>Not affiliated with Eventbrite or the Royal College of Surgeons of England. Read-only monitoring of a public page; it never automates a purchase.</p>
-  <p id="repo-line"></p>
-</footer>
+  <footer>
+    <a id="repo-link" href="https://github.com/Logeshsharma/booking-availability-monitor" target="_blank" rel="noopener">Source on GitHub</a>
+    · Not affiliated with Eventbrite or RCS England.
+  </footer>
 
-</div>
+</main>
 <script src="js/dashboard.js"></script>
 </body>
 </html>
