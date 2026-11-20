@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Local secrets — NEVER commit Telegram tokens or chat IDs
+.env
+.env.*
+secrets.json
+config.local.js
+*.secret
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# Logs & build output
+*.log
+npm-debug.log*
+dist/
+coverage/
+
+# Local dev server config (not part of the deployed site)
+.claude/

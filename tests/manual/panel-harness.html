@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Userscript panel harness</title>
+<style>
+  body { font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         margin: 0; padding: 24px; background: #f6f8fb; color: #19202c; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.sub { color: #5b6677; margin: 0 0 18px; }
+  fieldset { border: 1px solid #dde4ee; border-radius: 10px; background: #fff; margin: 0 0 14px; padding: 14px; }
+  legend { font-size: 12px; font-weight: 700; text-transform: uppercase; color: #5b6677; }
+  button { font: inherit; font-size: 13px; padding: 7px 12px; margin: 3px 4px 3px 0;
+           border: 1px solid #dde4ee; border-radius: 7px; background: #fff; cursor: pointer; }
+  button:hover { background: #f0f4f9; }
+  button.on { background: #2563eb; border-color: #2563eb; color: #fff; }
+  #log { background: #1e2430; color: #e6ebf4; padding: 12px; border-radius: 8px;
+         font-family: ui-monospace, Menlo, monospace; font-size: 12px; height: 260px;
+         overflow: auto; white-space: pre-wrap; }
+  .pill { display:inline-block; padding:2px 9px; border-radius:999px; font-size:12px; font-weight:700;
+          background:#e5e7eb; color:#374151; }
+</style>
+</head>
+<body>
+<h1>Tampermonkey panel harness</h1>
+<p class="sub">
+  Loads the real userscript with stubbed <code>GM_*</code> APIs so the panel, scheduler, persistence
+  and notification logic can be exercised in a browser without touching Eventbrite.
+  Network responses are served from the test fixtures.
+</p>
+
+<fieldset>
+  <legend>Simulated Eventbrite response</legend>
+  <div id="scenarios"></div>
+  <p style="margin:8px 0 0">Current: <span class="pill" id="current">sold-out</span></p>
+</fieldset>
+
+<fieldset>
+  <legend>Simulated Telegram API</legend>
+  <button data-tg="ok" class="on">Succeeds</button>
+  <button data-tg="fail">Fails (401 Unauthorized)</button>
+  <button data-tg="timeout">Times out</button>
+</fieldset>
+
+<fieldset>
+  <legend>Harness</legend>
+  <button id="reset">Reset stored state</button>
+  <button id="dump">Dump stored state</button>
+  <button id="clearlog">Clear log</button>
+</fieldset>
+
+<fieldset>
+  <legend>Event log</legend>
+  <div id="log"></div>
+</fieldset>
+
+<script>
+// ---------------------------------------------------------------- log
+const logEl = document.getElementById('log');
+function log(kind, msg) {
+  const t = new Date().toLocaleTimeString();
+  logEl.textContent += `[${t}] ${kind.padEnd(10)} ${msg}\n`;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+// ------------------------------------------------- scenario selection
+const SCENARIOS = {
+  'sold-out':        { listing: 'listing-sold-out.html',        checkout: 'checkout-sold-out.html' },
+  'available':       { listing: 'listing-on-sale.html',         checkout: 'checkout-available.html' },
+  'not-selectable':  { listing: 'listing-on-sale.html',         checkout: 'checkout-not-selectable.html' },
+  'waitlist':        { listing: 'listing-sold-out.html',        checkout: 'checkout-waitlist-open.html' },
+  'conflict':        { listing: 'listing-conflict.html',        checkout: 'checkout-sold-out.html' },
+  'blocked':         { listing: 'listing-blocked.html',         checkout: 'checkout-blocked.html' },
+  'not-yet-on-sale': { listing: 'listing-not-yet-on-sale.html', checkout: 'checkout-sold-out.html' },
+  'network-error':   { listing: null,                           checkout: null }
+};
+let scenario = 'sold-out';
+let telegramMode = 'ok';
+
+const scenBox = document.getElementById('scenarios');
+Object.keys(SCENARIOS).forEach(name => {
+  const b = document.createElement('button');
+  b.textContent = name;
+  b.dataset.scen = name;
+  if (name === scenario) b.classList.add('on');
+  b.onclick = () => {
+    scenario = name;
+    document.getElementById('current').textContent = name;
+    [...scenBox.children].forEach(c => c.classList.toggle('on', c.dataset.scen === name));
+    log('SCENARIO', 'switched to ' + name);
+  };
+  scenBox.appendChild(b);
+});
+
+document.querySelectorAll('[data-tg]').forEach(b => {
+  b.onclick = () => {
+    telegramMode = b.dataset.tg;
+    document.querySelectorAll('[data-tg]').forEach(x => x.classList.toggle('on', x === b));
+    log('TELEGRAM', 'mode = ' + telegramMode);
+  };
+});
+
+// ------------------------------------------------------ GM_* stubs
+window.GM_getValue = (k, d) => {
+  const v = localStorage.getItem(k);
+  return v === null ? d : v;
+};
+window.GM_setValue = (k, v) => {
+  localStorage.setItem(k, v);
+  if (k.endsWith('.status')) {
+    try { const s = JSON.parse(v); log('STATE', `${s.state} verified=${s.verified} checks=${s.checkCount}`); }
+    catch (e) {}
+  }
+};
+window.GM_deleteValue = (k) => localStorage.removeItem(k);
+
+window.GM_notification = (opts) => {
+  log('NOTIFY', `desktop → "${opts.title}" :: ${String(opts.text).replace(/\n/g, ' | ')}`);
+};
+
+window.GM_xmlhttpRequest = (opts) => {
+  const url = opts.url || '';
+
+  // --- Telegram -------------------------------------------------
+  if (url.includes('api.telegram.org')) {
+    log('TELEGRAM', 'POST sendMessage (mode=' + telegramMode + ')');
+    setTimeout(() => {
+      if (telegramMode === 'ok') {
+        opts.onload && opts.onload({ status: 200, responseText: JSON.stringify({ ok: true, result: { message_id: 1 } }) });
+      } else if (telegramMode === 'fail') {
+        opts.onload && opts.onload({ status: 401, responseText: JSON.stringify({ ok: false, error_code: 401, description: 'Unauthorized' }) });
+      } else {
+        opts.ontimeout && opts.ontimeout();
+      }
+    }, 120);
+    return;
+  }
+
+  // --- Eventbrite -----------------------------------------------
+  const cfg = SCENARIOS[scenario];
+  const isCheckout = url.includes('checkout-external');
+  const file = isCheckout ? cfg.checkout : cfg.listing;
+  log('FETCH', (isCheckout ? 'checkout' : 'listing ') + ' → ' + (file || 'SIMULATED NETWORK ERROR'));
+
+  if (!file) {
+    setTimeout(() => opts.onerror && opts.onerror(), 120);
+    return;
+  }
+  fetch('../fixtures/' + file)
+    .then(r => r.text())
+    .then(text => opts.onload && opts.onload({ status: 200, responseText: text }))
+    .catch(() => opts.onerror && opts.onerror());
+};
+
+// --------------------------------------------------- harness buttons
+document.getElementById('reset').onclick = () => {
+  localStorage.clear();
+  log('HARNESS', 'cleared stored state — reload to start clean');
+};
+document.getElementById('dump').onclick = () => {
+  Object.keys(localStorage).sort().forEach(k => log('STORE', k + ' = ' + localStorage.getItem(k)));
+};
+document.getElementById('clearlog').onclick = () => { logEl.textContent = ''; };
+
+log('HARNESS', 'GM_* stubs installed; loading userscript…');
+</script>
+<script src="../../userscript/booking-monitor.user.js"></script>
+<script>log('HARNESS', 'userscript loaded');</script>
+</body>
+</html>
