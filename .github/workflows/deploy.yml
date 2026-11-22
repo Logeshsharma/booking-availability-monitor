@@ -29,6 +29,34 @@ jobs:
           # Turns Pages on for this repo if it has not been enabled yet
           enablement: true
 
+      # GitHub Pages serves assets with cache-control: max-age=600, so a
+      # returning visitor can run the previous deploy's CSS/JS against the new
+      # HTML for up to ten minutes. Stamping each asset URL with a hash of its
+      # contents makes the filename change whenever the file does, so the
+      # browser is forced to fetch the matching version.
+      - name: Stamp asset URLs with content hashes
+        run: |
+          python3 - <<'STAMP'
+          import hashlib, re, pathlib
+
+          html = pathlib.Path('index.html')
+          s = html.read_text()
+
+          def stamp(match):
+              attr, path = match.group(1), match.group(2)
+              data = pathlib.Path(path).read_bytes()
+              digest = hashlib.sha1(data).hexdigest()[:8]
+              return '%s="%s?v=%s"' % (attr, path, digest)
+
+          s = re.sub(r'(href)="(css/[^"?]+\.css)(?:\?v=[0-9a-f]+)?"', stamp, s)
+          s = re.sub(r'(src)="(js/[^"?]+\.js)(?:\?v=[0-9a-f]+)?"', stamp, s)
+          html.write_text(s)
+
+          for line in s.splitlines():
+              if 'styles.css' in line or 'dashboard.js' in line:
+                  print(line.strip())
+          STAMP
+
       - name: Upload site artifact
         uses: actions/upload-pages-artifact@v3
         with:
