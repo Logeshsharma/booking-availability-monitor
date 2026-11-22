@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Booking Monitor — LDS Part 2 Exam, Feb 2027</title>
-<meta name="description" content="Install page for a Tampermonkey userscript that checks the LDS Part 2 Exam Eventbrite page every 15 seconds and alerts when tickets become available.">
+<meta name="description" content="Embeds the LDS Part 2 Exam Eventbrite booking page and reloads it every 15 seconds so you can watch for tickets becoming available.">
 <meta name="color-scheme" content="light dark">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8E%9F%EF%B8%8F%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="css/styles.css">
@@ -12,67 +12,65 @@
 <body>
 <main>
 
-  <h1>Booking Monitor</h1>
-  <p class="lede">
-    Checks the <a id="event-link" href="#" rel="noopener">LDS Part 2 Exam (Feb 2027)</a>
-    Eventbrite page every 15 seconds and alerts you by desktop notification and Telegram
-    when a ticket can actually be booked.
-  </p>
+  <header class="top">
+    <h1>Booking Monitor</h1>
+    <a class="toplink" id="event-link" href="#" target="_blank" rel="noopener">Open on Eventbrite ↗</a>
+  </header>
 
   <div class="refresh" id="refresh-bar">
     <span class="rdot" id="r-dot" aria-hidden="true"></span>
-    <span class="ritem">Last refresh <strong id="r-last">—</strong></span>
+    <span class="ritem">Last refresh <strong id="r-last">loading…</strong></span>
     <span class="ritem">Next in <strong id="r-next">—</strong></span>
     <span class="ritem">Refreshes <strong id="r-count">0</strong></span>
     <button type="button" class="rbtn" id="r-toggle">Pause</button>
   </div>
-  <p class="rnote" id="r-note">
-    This page reloads itself every 15 seconds. It does <strong>not</strong> check ticket
-    availability — a webpage cannot read another site's pages. Availability checking is
-    done by the userscript below.
+
+  <p class="rnote">
+    The booking page below reloads every 15 seconds. <strong>Nothing here detects availability
+    for you</strong> — you have to watch the frame. For automatic alerts, see the userscript at
+    the bottom of this page.
   </p>
 
-  <div class="note">
-    Live status is in the monitor panel on the Eventbrite page, not here.
-    This page can't read it — different browser origin.
+  <div class="framewrap" id="framewrap">
+    <noscript>
+      <p class="framefail">JavaScript is off, so the frame below will not reload by itself.</p>
+    </noscript>
   </div>
 
-  <h2>Install</h2>
-  <ol>
-    <li>Install <a href="https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo" target="_blank" rel="noopener">Tampermonkey</a>.</li>
-    <li>Click <strong>Install the userscript</strong> and confirm.</li>
-    <li>Open the booking page. The panel appears bottom-right.</li>
-    <li>Press <strong>Start</strong>, and leave the tab open.</li>
-  </ol>
+  <p class="framefail" id="frame-error" hidden>
+    The booking page did not load in the frame. Eventbrite may be blocking embedding, or the
+    network request failed. Use <a id="event-link-3" href="#" target="_blank" rel="noopener">the
+    direct link</a> instead.
+  </p>
 
-  <div class="btns">
-    <a class="btn primary" id="install-link" href="userscript/booking-monitor.user.js">Install the userscript</a>
-    <a class="btn" id="event-link-2" href="#" target="_blank" rel="noopener">Open booking page</a>
-  </div>
-
-  <h2>Telegram (optional)</h2>
-  <ol>
-    <li>Message <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a>, send <code>/newbot</code>, copy the token.</li>
-    <li>Send your new bot any message.</li>
-    <li>Open <code>api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code> and copy <code>chat.id</code>.</li>
-    <li>Paste both into the panel's <strong>⚙</strong> settings — <strong>not</strong> into this page.</li>
-  </ol>
-
-  <div class="note warn">
-    Never put your bot token on this public page. There is deliberately no field for it.
-    Credentials belong in Tampermonkey storage on your own machine.
-  </div>
-
-  <h2>Notes</h2>
-  <ul>
-    <li>Only runs while the browser is open and the machine is awake.</li>
-    <li>Backs off automatically if Eventbrite rate-limits the 15s polling.</li>
-    <li>Alerts only on a verified change to available, once per change.</li>
-    <li>Never buys tickets, never touches CAPTCHA, logins or the queue.</li>
-  </ul>
+  <details class="extra">
+    <summary>Want automatic alerts instead of watching? (Tampermonkey userscript)</summary>
+    <div class="extra-body">
+      <p>
+        A webpage cannot read another site's pages, so this frame can only be looked at. The
+        userscript runs on Eventbrite itself and can check availability properly, with desktop
+        and Telegram notifications.
+      </p>
+      <ol>
+        <li>Install <a href="https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo" target="_blank" rel="noopener">Tampermonkey</a>.</li>
+        <li>Click <strong>Install the userscript</strong> and confirm.</li>
+        <li>Open the booking page. A panel appears bottom-right. Press <strong>Start</strong>.</li>
+      </ol>
+      <div class="btns">
+        <a class="btn primary" id="install-link" href="userscript/booking-monitor.user.js">Install the userscript</a>
+        <a class="btn" id="event-link-2" href="#" target="_blank" rel="noopener">Open booking page</a>
+      </div>
+      <p class="tiny">
+        Telegram setup: message <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a>,
+        send <code>/newbot</code>, copy the token; send your bot a message; open
+        <code>api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code> and copy <code>chat.id</code>.
+        Paste both into the panel's ⚙ settings — never into this public page.
+      </p>
+    </div>
+  </details>
 
   <footer>
-    <a id="repo-link" href="https://github.com/Logeshsharma/booking-availability-monitor" target="_blank" rel="noopener">Source on GitHub</a>
+    <a href="https://github.com/Logeshsharma/booking-availability-monitor" target="_blank" rel="noopener">Source on GitHub</a>
     · Not affiliated with Eventbrite or RCS England.
   </footer>
 

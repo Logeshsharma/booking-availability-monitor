@@ -1,4 +1,4 @@
-/* Booking Monitor — minimal install page. No frameworks, no build step. */
+/* Booking Monitor — minimal embed page. No frameworks, no build step. */
 
 :root {
     --bg: #f6f8fb;
@@ -8,10 +8,8 @@
     --border: #dde4ee;
     --accent: #2563eb;
     --accent-hover: #1d4ed8;
-    --info-bg: #dbeafe;
-    --info-text: #1e3a8a;
-    --warn-bg: #fef3c7;
-    --warn-text: #78350f;
+    --bad-bg: #fee2e2;
+    --bad-text: #7f1d1d;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -23,10 +21,8 @@
         --border: #2a3342;
         --accent: #60a5fa;
         --accent-hover: #93c5fd;
-        --info-bg: #15233d;
-        --info-text: #bfdbfe;
-        --warn-bg: #2e2410;
-        --warn-text: #fcd34d;
+        --bad-bg: #2e1416;
+        --bad-text: #fca5a5;
     }
 }
 
@@ -36,83 +32,34 @@ html { -webkit-text-size-adjust: 100%; }
 
 body {
     margin: 0;
-    padding: 40px 20px 64px;
+    padding: 20px 20px 48px;
     background: var(--bg);
     color: var(--text);
     font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
-main { max-width: 560px; margin: 0 auto; }
-
-h1 { font-size: 26px; margin: 0 0 10px; letter-spacing: -.02em; }
-h2 { font-size: 16px; margin: 32px 0 10px; letter-spacing: -.01em; }
-
-.lede { color: var(--dim); margin: 0 0 20px; }
-
-p { margin: 0 0 14px; }
-
-ol, ul { margin: 0; padding-left: 20px; }
-li { margin-bottom: 7px; }
-
-.note {
-    background: var(--info-bg);
-    color: var(--info-text);
-    border-left: 3px solid var(--accent);
-    padding: 11px 14px;
-    border-radius: 0 7px 7px 0;
-    font-size: 14.5px;
-    margin: 0 0 20px;
-}
-
-.note.warn { background: var(--warn-bg); color: var(--warn-text); border-left-color: #d97706; }
-
-.btns { display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0 0; }
-
-.btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 10px 18px;
-    border-radius: 9px;
-    border: 1px solid var(--border);
-    background: var(--surface);
-    color: var(--text);
-    font-size: 14.5px;
-    font-weight: 600;
-    text-decoration: none;
-}
-
-.btn:hover { border-color: var(--accent); }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.btn.primary:hover { background: var(--accent-hover); }
-
-code {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: .88em;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    padding: 1px 5px;
-    border-radius: 5px;
-    word-break: break-word;
-}
+main { max-width: 1000px; margin: 0 auto; }
 
 a { color: var(--accent); }
 a:hover { color: var(--accent-hover); }
 
-footer {
-    margin-top: 36px;
-    padding-top: 18px;
-    border-top: 1px solid var(--border);
-    color: var(--dim);
-    font-size: 13.5px;
+/* ---------- header ---------- */
+
+.top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 14px;
+    flex-wrap: wrap;
+    margin-bottom: 14px;
 }
 
-@media (max-width: 480px) {
-    body { padding: 28px 16px 48px; }
-    .btn { width: 100%; }
-}
+h1 { font-size: 21px; margin: 0; letter-spacing: -.02em; }
 
-/* ---- 15-second auto-refresh bar ---- */
+.toplink { font-size: 14px; font-weight: 600; text-decoration: none; white-space: nowrap; }
+.toplink:hover { text-decoration: underline; }
+
+/* ---------- refresh bar ---------- */
 
 .refresh {
     display: flex;
@@ -132,8 +79,7 @@ footer {
 .refresh strong { color: var(--text); font-weight: 600; }
 
 .rdot {
-    width: 8px;
-    height: 8px;
+    width: 8px; height: 8px;
     border-radius: 50%;
     background: #16a34a;
     flex: none;
@@ -160,11 +106,117 @@ footer {
 .rnote {
     font-size: 12.5px;
     color: var(--dim);
-    margin: 0 0 20px;
+    margin: 0 0 14px;
     line-height: 1.5;
 }
 
-@media (max-width: 480px) {
+/* ---------- the embedded booking page ---------- */
+
+.framewrap {
+    position: relative;
+    width: 100%;
+    height: min(76vh, 880px);
+    min-height: 460px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+/* Frames stack so the outgoing one stays visible until the new one is ready. */
+.ebframe {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    display: block;
+    background: var(--surface);
+}
+
+.framefail {
+    margin: 10px 0 0;
+    padding: 10px 14px;
+    background: var(--bad-bg);
+    color: var(--bad-text);
+    border-radius: 8px;
+    font-size: 13.5px;
+}
+
+/* ---------- collapsed userscript section ---------- */
+
+.extra {
+    margin: 22px 0 0;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: var(--surface);
+}
+
+.extra > summary {
+    cursor: pointer;
+    padding: 11px 14px;
+    font-size: 14px;
+    font-weight: 600;
+    list-style: none;
+}
+
+.extra > summary::-webkit-details-marker { display: none; }
+.extra > summary::before { content: "▸ "; color: var(--dim); }
+.extra[open] > summary::before { content: "▾ "; }
+
+.extra-body { padding: 0 14px 14px; font-size: 14.5px; }
+.extra-body p { margin: 0 0 12px; }
+.extra-body ol { margin: 0 0 12px; padding-left: 20px; }
+.extra-body li { margin-bottom: 5px; }
+
+.btns { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 12px; }
+
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 9px 16px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.btn:hover { border-color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover { background: var(--accent-hover); }
+
+.tiny { font-size: 12.5px; color: var(--dim); line-height: 1.55; margin: 0; }
+
+code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: .88em;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    padding: 1px 5px;
+    border-radius: 5px;
+    word-break: break-word;
+}
+
+/* ---------- footer ---------- */
+
+footer {
+    margin-top: 22px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+    color: var(--dim);
+    font-size: 13px;
+}
+
+/* ---------- small screens ---------- */
+
+@media (max-width: 560px) {
+    body { padding: 16px 14px 36px; }
+    .framewrap { height: 68vh; min-height: 380px; }
     .refresh { font-size: 12.5px; gap: 5px 10px; }
     .rbtn { margin-left: 0; width: 100%; margin-top: 4px; }
+    .btn { width: 100%; }
 }
