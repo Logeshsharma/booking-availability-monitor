@@ -19,6 +19,19 @@
     when a ticket can actually be booked.
   </p>
 
+  <div class="refresh" id="refresh-bar">
+    <span class="rdot" id="r-dot" aria-hidden="true"></span>
+    <span class="ritem">Last refresh <strong id="r-last">—</strong></span>
+    <span class="ritem">Next in <strong id="r-next">—</strong></span>
+    <span class="ritem">Refreshes <strong id="r-count">0</strong></span>
+    <button type="button" class="rbtn" id="r-toggle">Pause</button>
+  </div>
+  <p class="rnote" id="r-note">
+    This page reloads itself every 15 seconds. It does <strong>not</strong> check ticket
+    availability — a webpage cannot read another site's pages. Availability checking is
+    done by the userscript below.
+  </p>
+
   <div class="note">
     Live status is in the monitor panel on the Eventbrite page, not here.
     This page can't read it — different browser origin.
