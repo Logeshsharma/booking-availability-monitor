@@ -4,7 +4,7 @@ Checks the Eventbrite page for the RCS England **Licence in Dental Surgery (LDS)
 Part 2 Exam — February 2027** every **15 seconds** and alerts you by desktop
 notification and Telegram when a ticket can genuinely be booked.
 
-- **Install page:** <https://logeshsharma.github.io/booking-availability-monitor/>
+- **Website:** <https://logeshsharma.github.io/booking-availability-monitor/>
 - **Target event:** [LDS Part 2 Exam February 2027](https://www.eventbrite.co.uk/e/licence-in-dental-surgery-part-2-exam-february-2027-tickets-2004570995810) (`2004570995810`)
 
 No backend, no database, no paid hosting.
@@ -13,13 +13,59 @@ No backend, no database, no paid hosting.
 
 ## The two pieces
 
-| | GitHub Pages | Tampermonkey userscript |
+| | GitHub Pages website | Tampermonkey userscript |
 |---|---|---|
 | Runs on | `logeshsharma.github.io` | `eventbrite.co.uk` |
-| Purpose | Install instructions only | **All monitoring + the live panel** |
+| What it does | Embeds the booking page and reloads that frame every 15s | **Actually detects availability and alerts you** |
+| Detects availability? | **No** — you watch it | Yes, with desktop + Telegram alerts |
 
-They are different browser origins, so the install page cannot read the
-userscript's storage. It therefore shows **no** live data rather than faking any.
+### Why the website cannot detect availability
+
+The website and Eventbrite are different browser origins, and Eventbrite sends
+no `Access-Control-Allow-Origin` header. Verified from the deployed site:
+
+| Attempt | Result |
+|---|---|
+| `fetch()` the booking page | blocked by CORS |
+| `XMLHttpRequest` | blocked by CORS |
+| `fetch(mode: 'no-cors')` | `type: "opaque"`, body length 0 |
+| `<iframe>` it | **loads and renders** |
+| Read inside that iframe | `SecurityError: Blocked a frame … from accessing a cross-origin frame` |
+
+Eventbrite sets no `X-Frame-Options` and no CSP `frame-ancestors`, so the page
+can be embedded — it just cannot be read. The site therefore shows you the real
+booking page and keeps it fresh; it never claims to detect anything. For
+automatic detection, use the userscript.
+
+---
+
+## The website
+
+Embeds the booking page and reloads **only that frame** every 15 seconds, while
+the page itself stays loaded. Shows last refresh, a countdown to the next one, a
+refresh count, and a Pause control.
+
+Implementation notes that matter:
+
+- Each refresh builds a **new `<iframe>` and swaps it in**, rather than
+  reassigning `.src`. Assigning `.src` pushes an entry onto the frame's session
+  history and hijacks the browser Back button.
+- The incoming frame loads hidden and is swapped in 2.5s after its `load` event.
+  Eventbrite is a Next.js app whose `load` fires before React paints, so
+  swapping immediately showed an unpainted frame.
+- The cadence is measured from when each request goes out, not when it returns,
+  so 15s stays 15s. A 2s floor stops a slow load causing back-to-back requests.
+- The frame URL carries a cache-buster — the page is served via CloudFront with
+  `s-maxage=300`, so without it the browser can return a cached copy.
+- A failed or timed-out load keeps the previous frame on screen rather than
+  blanking it.
+- CSS/JS URLs are stamped with content hashes by the deploy workflow. Pages
+  serves assets with `max-age=600`, so without this a returning visitor can run
+  the previous deploy's JavaScript against the new markup.
+
+**One full page load of Eventbrite every 15 seconds is not free** — roughly 240
+loads an hour, each a few hundred KB plus assets. Use Pause when you are not
+actively watching.
 
 ---
 
