@@ -21,7 +21,7 @@
     var EVENT_URL =
         'https://www.eventbrite.co.uk/e/licence-in-dental-surgery-part-2-exam-february-2027-tickets-2004570995810';
 
-    var REFRESH_SECONDS = 15;
+    var REFRESH_SECONDS = 60;
     var LOAD_TIMEOUT_MS = 20000;
     // Eventbrite is a Next.js app: its `load` event fires before React has
     // painted, so swapping the instant load fires shows a blank frame for a
